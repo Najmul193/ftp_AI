@@ -14,12 +14,13 @@ AI_PERMISSIONS: dict[str, tuple[str, str]] = {
     "AI_CHAT": ("ai", "Ask the AI assistant questions about the book"),
     "AI_ADMIN": ("ai", "Manage AI providers, the master switch and data policy"),
     "AI_AUDIT": ("ai", "Read the AI egress log: exactly what was sent to providers"),
+    "AI_MARKET_EDIT": ("ai", "Enter Bangladesh Bank market rates (treasury desk)"),
 }
 
 #: role -> AI permissions it gains.
 AI_GRANTS: dict[str, set[str]] = {
-    "ADMIN": {"AI_VIEW", "AI_CHAT", "AI_ADMIN", "AI_AUDIT"},
-    "FTP_MANAGER": {"AI_VIEW", "AI_CHAT"},
+    "ADMIN": {"AI_VIEW", "AI_CHAT", "AI_ADMIN", "AI_AUDIT", "AI_MARKET_EDIT"},
+    "FTP_MANAGER": {"AI_VIEW", "AI_CHAT", "AI_MARKET_EDIT"},
     "FTP_APPROVER": {"AI_VIEW", "AI_CHAT"},
     "ANALYST": {"AI_VIEW", "AI_CHAT"},
     "DATA_OPERATOR": {"AI_VIEW"},

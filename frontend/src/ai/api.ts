@@ -102,3 +102,65 @@ export const aiApi = {
     return request<{ total: number; items: EgressItem[] }>(`/ai/egress-log?${q}`);
   },
 };
+
+// --- market data -------------------------------------------------------------
+
+export interface MarketSeries {
+  code: string; name: string; short: string; category: string; unit: string; source: string;
+  tenor_days: number | null; value: number | null; as_of: string | null;
+  previous: number | null; previous_as_of: string | null; change: number | null;
+  stale: boolean; spark: number[]; entered_by: number | null; source_ref: string | null;
+}
+
+export interface CurvePoint { code: string; label: string; tenor_days: number; value: number; as_of: string }
+
+export interface BenchmarkRow {
+  product_code: string; name: string; side: "ASSET" | "LIABILITY"; tenor_days: number;
+  tenor_basis: string; benchmark: number | null; market: number | null; market_basis: string | null;
+  gap_bp: number | null; balance: number | null; monthly_impact: number | null; behavioural: boolean;
+}
+
+export interface JobState {
+  last_status: string | null; last_run: string | null; last_success: string | null;
+  errors: string[] | null;
+}
+
+export interface MarketOverview {
+  series: MarketSeries[];
+  curve: CurvePoint[];
+  benchmarks: { items: BenchmarkRow[]; balances_as_of: string | null; error?: string };
+  jobs: Record<string, JobState>;
+}
+
+export interface NewsItem {
+  id: number; source: string; title: string; url: string; published_at: string | null;
+  summary: string | null; region: "BD" | "GLOBAL"; tags: string[]; impacts: string[];
+  rate_signal: number; relevance: number;
+}
+
+export interface ParsedItem {
+  code: string; name: string; unit: string; obs_date: string | null; value: number;
+  evidence: string; current: number | null; current_as_of: string | null;
+}
+
+export interface ParseResult {
+  kind: "call_money" | "ref_rates" | "auctions" | "unknown";
+  page_date: string | null; warnings: string[]; items: ParsedItem[];
+}
+
+export interface Entry { code: string; obs_date: string; value: number | string; ref?: string }
+
+export const marketApi = {
+  overview: () => request<MarketOverview>("/ai/market/overview"),
+  news: (p: { tag?: string; region?: string; q?: string; sort?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(p).forEach(([k, v]) => v !== undefined && v !== "" && q.set(k, String(v)));
+    return request<{ total: number; items: NewsItem[] }>(`/ai/market/news?${q}`);
+  },
+  parse: (text: string) => request<ParseResult>("/ai/market/parse", { method: "POST", ...json({ text }) }),
+  save: (source: "bb_paste" | "manual", entries: Entry[]) =>
+    request<{ saved: number; changed: number }>("/ai/market/entries",
+      { method: "POST", ...json({ source, entries }) }),
+  refresh: () => request<{ results: { job: string; status: string }[] }>(
+    "/ai/market/refresh", { method: "POST" }),
+};

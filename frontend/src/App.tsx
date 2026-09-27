@@ -16,13 +16,14 @@ import Overview from "./views/Overview";
 import Rates from "./views/Rates";
 import Upload from "./views/Upload";
 import AiAdmin from "./ai/AiAdmin";
+import Intelligence from "./ai/Intelligence";
 
 //: Basic overview is first and is where a session lands after sign-in.
 //: `currentView` defaults to the same id, so the landing page and the first
 //: nav item cannot drift. `desc` is the one line under the page title;
 //: `bare` pages skip the title block to give the screen to their charts.
 const NAV: { id: string; label: string; group: string; icon: IconName;
-             desc: string; perm?: string; bare?: boolean }[] = [
+             desc: string; perm?: string; bare?: boolean; ai?: boolean }[] = [
   // The landing page opens straight onto its four charts.
   { id: "basic", label: "Basic overview", group: "Analyse", icon: "dashboard", bare: true,
     desc: "Branch, product and side-by-side FTP profitability at a glance." },
@@ -38,6 +39,10 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
     desc: "Where the book loses money, down to the individual account." },
   { id: "consolidated", label: "Consolidated", group: "Analyse", icon: "layers",
     desc: "Every account-day as one row, as in the Consolidated Data sheet." },
+  // Shown only while the AI module is loaded and switched on.
+  { id: "intel", label: "Market intelligence", group: "Intelligence", icon: "globe",
+    perm: "AI_VIEW", ai: true,
+    desc: "The taka curve and global rates next to your FTP benchmarks, and the news that moves them." },
   { id: "upload", label: "Upload", group: "Operate", icon: "upload", perm: "UPLOAD_VIEW",
     desc: "Load bank data files and follow each batch through processing." },
   { id: "admin", label: "Master data", group: "Operate", icon: "database",
@@ -116,11 +121,12 @@ function Shell() {
   // gates the application rather than merely suggesting a change.
   if (me.must_change_password) return <ForcePasswordChange />;
 
-  const visible = NAV.filter((n) => !n.perm || can(n.perm));
+  const visible = NAV.filter((n) => (!n.perm || can(n.perm)) && (!n.ai || ai?.enabled));
   const Current = { basic: BasicOverview, consolidated: Consolidated,
                     daily: Daily, overview: Overview, analytics: Analytics,
                     leaders: Leaders, accounts: Accounts, upload: Upload,
-                    admin: Admin, rates: Rates, activity: Activity, ai: AiAdmin }[view] ?? Daily;
+                    admin: Admin, rates: Rates, activity: Activity, ai: AiAdmin,
+                    intel: ai?.enabled ? Intelligence : Daily }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 
   const activeFilterCount = (Object.entries(filters) as [string, unknown][]).reduce(
@@ -311,7 +317,7 @@ function Sidebar({ items, view, rail, drawer = false, onClose }: {
 
       <nav aria-label="Main" style={{ flex: 1, padding: rail ? "12px 10px" : "8px 12px",
                                        overflowY: "auto" }}>
-        {["Analyse", "Operate"].map((group) => {
+        {["Analyse", "Intelligence", "Operate"].map((group) => {
           const groupItems = items.filter((n) => n.group === group);
           if (!groupItems.length) return null;
           return (

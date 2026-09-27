@@ -8,12 +8,18 @@ already under way.
 
 from __future__ import annotations
 
+import secrets
+from datetime import date
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.ai import settings_service as svc
+from app.ai.config import ai_settings
+from app.ai.market import catalog, paste
+from app.ai.market import service as market
 from app.ai.context.entities import user_vault
 from app.ai.gateway import gateway as gw
 from app.ai.gateway.gateway import (
@@ -281,3 +287,117 @@ def egress_log(db: DbDep, limit: int = Query(50, ge=1, le=200), offset: int = Qu
         "response": r.masked_response, "grounded": r.grounded, "unverified": r.unverified,
         "tokens_in": r.tokens_in, "tokens_out": r.tokens_out, "latency_ms": r.latency_ms,
     } for r in rows]}
+
+
+# --- market data ------------------------------------------------------------- #
+
+_view = [Depends(require("AI_VIEW")), Depends(require_ai_enabled)]
+
+
+def _market_editor(user: Annotated[CurrentUser, Depends(require("AI_MARKET_EDIT"))]) -> CurrentUser:
+    """Market rates move every FTP benchmark comparison: head office only."""
+    if user.scope_level is not ScopeLevel.HO:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "entering market rates is restricted to head office")
+    return user
+
+
+MarketEditor = Annotated[CurrentUser, Depends(_market_editor)]
+
+
+@router.get("/market/overview", dependencies=_view)
+def market_overview(db: DbDep, user: ActiveUser) -> dict:
+    # Product balances are bank-wide figures: head office only.
+    return market.overview(db, include_balances=user.scope_level is ScopeLevel.HO)
+
+
+@router.get("/market/series/{code}", dependencies=_view)
+def market_series(code: str, db: DbDep, days: int = Query(365, ge=7, le=3650)) -> dict:
+    if code not in catalog.BY_CODE:
+        raise HTTPException(404, f"unknown series {code}")
+    s = catalog.BY_CODE[code]
+    return {"code": code, "name": s.name, "unit": s.unit,
+            "points": [{"date": o.obs_date, "value": o.value, "source": o.source}
+                       for o in market.series_history(db, code, days)]}
+
+
+@router.get("/market/news", dependencies=_view)
+def market_news(db: DbDep, tag: str | None = None, region: Literal["BD", "GLOBAL"] | None = None,
+                min_relevance: int = Query(1, ge=0, le=20), q: str | None = Query(None, max_length=100),
+                limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0),
+                sort: Literal["top", "latest"] = "top") -> dict:
+    rows, total = market.news(db, tag_=tag, region=region, min_relevance=min_relevance,
+                              limit=limit, offset=offset, q=q, sort=sort)
+    return {"total": total, "items": [{
+        "id": n.id, "source": n.source, "title": n.title, "url": n.url,
+        "published_at": n.published_at, "summary": n.summary, "region": n.region,
+        "tags": n.tags, "impacts": n.impacts, "rate_signal": n.rate_signal,
+        "relevance": n.relevance} for n in rows]}
+
+
+class PasteIn(BaseModel):
+    text: str = Field(min_length=10, max_length=200_000)
+
+
+@router.post("/market/parse", dependencies=[Depends(require_ai_enabled)])
+def market_parse(body: PasteIn, db: DbDep, _user: MarketEditor) -> dict:
+    """Read rates out of a pasted Bangladesh Bank page. Saves nothing."""
+    r = paste.parse(body.text)
+    current = {s["code"]: s for s in market.overview(db, include_balances=False)["series"]}
+    return {"kind": r.kind, "page_date": r.page_date, "warnings": r.warnings, "items": [{
+        "code": i.code, "name": catalog.BY_CODE[i.code].name, "unit": catalog.BY_CODE[i.code].unit,
+        "obs_date": i.obs_date or r.page_date, "value": i.value, "evidence": i.evidence,
+        "current": current.get(i.code, {}).get("value"),
+        "current_as_of": current.get(i.code, {}).get("as_of"),
+    } for i in r.items]}
+
+
+class EntryIn(BaseModel):
+    code: str
+    obs_date: date
+    value: Decimal = Field(gt=0, lt=100_000_000)
+    ref: str | None = Field(None, max_length=500)
+
+
+class EntriesIn(BaseModel):
+    source: Literal["bb_paste", "manual"]
+    entries: list[EntryIn] = Field(min_length=1, max_length=50)
+
+
+@router.post("/market/entries", dependencies=[Depends(require_ai_enabled)])
+def market_entries(body: EntriesIn, db: DbDep, user: MarketEditor) -> dict:
+    today = date.today()
+    for e in body.entries:
+        s = catalog.BY_CODE.get(e.code)
+        if s is None or e.code not in catalog.MANUAL:
+            raise HTTPException(422, {"code": "bad_series", "message": f"{e.code} cannot be entered"})
+        if e.obs_date > today or (today - e.obs_date).days > 400:
+            raise HTTPException(422, {"code": "bad_date",
+                                      "message": f"{s.short}: date {e.obs_date} is out of range"})
+        if s.unit == "pct" and not (Decimal("0.01") <= e.value <= Decimal("40")):
+            raise HTTPException(422, {"code": "bad_value",
+                                      "message": f"{s.short}: {e.value}% is not a plausible rate"})
+    try:
+        changed = market.save_entries(db, user.id, [e.model_dump() for e in body.entries],
+                                      body.source)
+    except ValueError as exc:
+        raise HTTPException(422, {"code": "bad_series", "message": str(exc)}) from exc
+    return {"saved": len(body.entries), "changed": changed}
+
+
+@router.post("/market/refresh", dependencies=[Depends(require_ai_enabled)])
+def market_refresh(_user: HoAdmin) -> dict:
+    """Collect prices and news now instead of waiting for the schedule."""
+    return {"results": [market.run_job("market_bb", "manual"),
+                        market.run_job("market_prices", "manual"),
+                        market.run_job("market_news", "manual")]}
+
+
+@router.post("/jobs/tick", include_in_schema=False)
+def jobs_tick(db: DbDep, x_ai_jobs_token: Annotated[str | None, Header()] = None) -> dict:
+    """For an external cron: run whatever is due. Token-guarded, no user."""
+    expected = ai_settings().AI_JOBS_TOKEN
+    if not expected or not x_ai_jobs_token or not secrets.compare_digest(x_ai_jobs_token, expected):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "bad or missing job token")
+    due = market.due_jobs(db)
+    return {"ran": [market.run_job(j, "tick") for j in due]}

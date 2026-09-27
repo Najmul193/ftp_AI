@@ -10,6 +10,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.ai import settings_service
+from app.ai.market.service import sync_catalog
 from app.ai.permissions import AI_GRANTS, AI_PERMISSIONS, register
 from app.core.db import session_scope
 from app.models import Permission, Role, RolePermission
@@ -36,6 +37,7 @@ def seed() -> None:
                 if perms[c].id not in have:
                     s.add(RolePermission(role_id=role.id, permission_id=perms[c].id))
         settings_service.ensure_row(s)
+        sync_catalog(s)
 
 
 if __name__ == "__main__":
