@@ -8,7 +8,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // Same-origin in dev, so the browser never deals with CORS or a second host.
-      "/api": { target: "http://127.0.0.1:8099", changeOrigin: true },
+      // Follows FTP_API_PORT so a second environment (start-ai.sh) proxies
+      // to its own API rather than the main one.
+      "/api": { target: `http://127.0.0.1:${process.env.FTP_API_PORT || 8099}`,
+                changeOrigin: true },
     },
   },
   build: {

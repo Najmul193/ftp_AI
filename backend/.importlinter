@@ -1,5 +1,6 @@
 [importlinter]
 root_package = app
+include_external_packages = True
 
 [importlinter:contract:domain-is-pure]
 name = domain must not import infrastructure
@@ -13,3 +14,56 @@ forbidden_modules =
     app.services
     app.tasks
     app.ingestion
+
+[importlinter:contract:core-does-not-know-ai]
+name = the platform never imports the optional AI module
+type = forbidden
+source_modules =
+    app.domain
+    app.models
+    app.repositories
+    app.services
+    app.ingestion
+    app.api
+    app.cli
+    app.core
+forbidden_modules =
+    app.ai
+# app.main is the composition root: the one place that mounts the module.
+ignore_imports =
+    app.main -> app.ai.mount
+
+[importlinter:contract:single-egress]
+name = only the AI gateway may reach an AI provider
+type = forbidden
+source_modules =
+    app.ai.api
+    app.ai.settings_service
+    app.ai.context
+    app.ai.presets
+    app.ai.permissions
+    app.ai.cli
+    app.ai.models
+    app.ai.crypto
+forbidden_modules =
+    app.ai.providers
+allow_indirect_imports = True
+
+[importlinter:contract:gateway-rules-are-pure]
+name = the gateway's privacy rules do no I/O
+type = forbidden
+source_modules =
+    app.ai.gateway.tokenizer
+    app.ai.gateway.generalize
+    app.ai.gateway.dlp
+    app.ai.gateway.policy
+    app.ai.gateway.grounding
+forbidden_modules =
+    app.models
+    app.core
+    app.ai.models
+    app.ai.providers
+    app.ai.gateway.gateway
+    sqlalchemy
+    httpx
+    anthropic

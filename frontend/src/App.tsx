@@ -15,6 +15,7 @@ import Leaders from "./views/Leaders";
 import Overview from "./views/Overview";
 import Rates from "./views/Rates";
 import Upload from "./views/Upload";
+import AiAdmin from "./ai/AiAdmin";
 
 //: Basic overview is first and is where a session lands after sign-in.
 //: `currentView` defaults to the same id, so the landing page and the first
@@ -45,6 +46,10 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
     perm: "CONFIG_RATE_VIEW", desc: "FTP rate components in force, and how they have changed." },
   { id: "activity", label: "Activity log", group: "Operate", icon: "history",
     perm: "AUDIT_VIEW", desc: "Every change made in the system, who made it and when." },
+  // Exists only when the backend runs the AI module: without it no user holds
+  // AI_ADMIN, so the permission filter alone hides it.
+  { id: "ai", label: "AI management", group: "Operate", icon: "sparkle", perm: "AI_ADMIN",
+    desc: "AI providers and keys, the system-wide switch, and exactly what may leave the bank." },
 ];
 
 /** Below this width the sidebar leaves the layout and becomes a drawer. */
@@ -71,7 +76,7 @@ export default function App() {
 }
 
 function Shell() {
-  const { me, ready, can, dataInfo, lastSync, refreshData, filters } = useApp();
+  const { me, ready, can, dataInfo, lastSync, refreshData, filters, ai } = useApp();
   const [view, setView] = useState(currentView());
   const narrow = useNarrow();
   // The sidebar rests as the icon rail, so the page always has its full
@@ -115,7 +120,7 @@ function Shell() {
   const Current = { basic: BasicOverview, consolidated: Consolidated,
                     daily: Daily, overview: Overview, analytics: Analytics,
                     leaders: Leaders, accounts: Accounts, upload: Upload,
-                    admin: Admin, rates: Rates, activity: Activity }[view] ?? Daily;
+                    admin: Admin, rates: Rates, activity: Activity, ai: AiAdmin }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 
   const activeFilterCount = (Object.entries(filters) as [string, unknown][]).reduce(
@@ -177,6 +182,13 @@ function Shell() {
                 </span>
               )}
               <IconButton icon="refresh" label="Refresh now" onClick={refreshData} />
+              {ai?.enabled && !narrow && (
+                <a href={ai.can_admin ? "#/ai" : undefined} title={ai.provider
+                   ? `AI on · ${ai.provider.label} (${ai.provider.model})` : "AI on"}
+                   style={{ textDecoration: "none" }}>
+                  <Pill tone="info">AI on</Pill>
+                </a>
+              )}
             </div>
 
             {!narrow && (

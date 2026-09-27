@@ -15,7 +15,7 @@ RUN_DIR="var/run"
 LOG_DIR="var/log"
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
-DB_CONTAINER="ftp-postgres"
+DB_CONTAINER="${FTP_DB_CONTAINER:-ftp-postgres}"
 DB_PORT="${FTP_DB_PORT:-55432}"
 API_PORT="${FTP_API_PORT:-8099}"
 WEB_PORT="${FTP_WEB_PORT:-5173}"
@@ -100,6 +100,11 @@ fi
 if [ "$SEED" = "1" ]; then
   ./.venv/bin/alembic upgrade head >/dev/null && ok "migrations applied"
   ./.venv/bin/python -m app.cli.seed >/dev/null && ok "reference data seeded"
+  # The optional AI module keeps its own migration history; only when it is on.
+  if [ "${FTP_AI_MODULE:-0}" = "1" ]; then
+    ./.venv/bin/python -m app.ai.cli.migrate >/dev/null && ok "AI migrations applied"
+    ./.venv/bin/python -m app.ai.cli.seed_ai >/dev/null && ok "AI module seeded"
+  fi
 fi
 
 nohup ./.venv/bin/uvicorn app.main:app \

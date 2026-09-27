@@ -77,3 +77,10 @@ for r in (auth.router, dashboard.router, analytics.router, org.router,
           products.router, config.router, audit.router, uploads.router,
           system.router):
     app.include_router(r, prefix=settings.API_V1_PREFIX)
+
+# Optional AI module. Off, `app.ai` is never imported: no route, job,
+# permission or table of its exists, and the platform is unchanged.
+if settings.AI_MODULE:
+    from app.ai.mount import mount as mount_ai
+
+    mount_ai(app)

@@ -10,7 +10,9 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 RUN_DIR="var/run"
-DB_CONTAINER="ftp-postgres"
+DB_CONTAINER="${FTP_DB_CONTAINER:-ftp-postgres}"
+API_PORT="${FTP_API_PORT:-8099}"
+WEB_PORT="${FTP_WEB_PORT:-5173}"
 
 STOP_DB=0
 PURGE=0
@@ -67,9 +69,13 @@ stop_pid "Web UI" web.pid
 stop_pid "API" api.pid
 
 # Catch anything started outside the scripts, so a stray dev server does not
-# hold the port and make the next start fail confusingly.
-pkill -f "uvicorn app.main:app" 2>/dev/null && ok "stray uvicorn processes cleared"
-pkill -f "vite --port" 2>/dev/null && ok "stray vite processes cleared"
+# hold the port and make the next start fail confusingly. Matched on this
+# environment's own ports only: a second environment (start-ai.sh) runs the
+# same commands on other ports, and stopping one must never stop the other.
+pkill -f "uvicorn app.main:app .*--port ${API_PORT}( |$)" 2>/dev/null \
+  && ok "stray uvicorn on :${API_PORT} cleared"
+pkill -f "vite .*--port ${WEB_PORT}( |$)" 2>/dev/null \
+  && ok "stray vite on :${WEB_PORT} cleared"
 
 if [ "$STOP_DB" = "1" ]; then
   say "PostgreSQL"

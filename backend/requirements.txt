@@ -20,3 +20,11 @@ openpyxl==3.1.5
 
 # --- Observability ---
 structlog==26.1.0
+
+# --- AI module (app.ai; loaded only when FTP_AI_MODULE=1) ---
+httpx==0.28.1
+anthropic==1.8.0
+cryptography==50.0.1
+feedparser==6.0.14
+beautifulsoup4==4.15.0
+apscheduler==3.11.3

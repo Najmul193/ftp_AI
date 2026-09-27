@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     LOCKOUT_MINUTES: int = 15
     PASSWORD_MIN_LENGTH: int = 12
 
+    # --- optional modules -------------------------------------------------- #
+    #: Load the AI module (`app.ai`). Off: the package is never imported, so no
+    #: AI route, job, permission or table exists. Its own settings live in
+    #: `app.ai.config`.
+    AI_MODULE: bool = Field(False, validation_alias="FTP_AI_MODULE")
+
     # --- ingestion -------------------------------------------------------- #
     UPLOAD_MAX_BYTES: int = 100 * 1024 * 1024
     UPLOAD_STORAGE_DIR: str = "./var/uploads"

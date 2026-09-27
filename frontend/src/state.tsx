@@ -2,6 +2,7 @@ import {
   createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState,
 } from "react";
 import { api, Branch, DataVersion, Filters, Me, Node_, Product, setToken } from "./api";
+import { aiApi, AiStatus } from "./ai/api";
 
 interface Ctx {
   me: Me | null;
@@ -30,6 +31,10 @@ interface Ctx {
   dataInfo: DataVersion | null;
   refreshData: () => void;
   lastSync: Date | null;
+
+  /** The optional AI module: null when the backend runs without it. */
+  ai: AiStatus | null;
+  refreshAi: () => Promise<void>;
 }
 
 const C = createContext<Ctx>(null!);
@@ -90,6 +95,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [dataVersion, setDataVersion] = useState(0);
   const [dataInfo, setDataInfo] = useState<DataVersion | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
+  const [ai, setAi] = useState<AiStatus | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("ftp_theme") as "light" | "dark") ??
           (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"),
@@ -120,6 +126,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setBranches(b); setProducts(p); setDivisions(dv); setDistricts(ds);
   }, []);
 
+  const refreshAi = useCallback(async () => {
+    try { setAi(await aiApi.status()); } catch { /* the next poll retries */ }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -148,6 +158,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (seen !== null && v.version !== seen) setDataVersion((n) => n + 1);
         seen = v.version;
       } catch { /* a failed poll is not worth surfacing; the next one retries */ }
+      // The AI switch rides the same poll, so turning it off reaches every
+      // open session within one tick.
+      refreshAi();
     };
 
     check();
@@ -161,7 +174,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [me]);
+  }, [me, refreshAi]);
 
   const setFilters = useCallback((f: Filters | ((p: Filters) => Filters)) => {
     setFiltersRaw((prev) => {
@@ -181,7 +194,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await refreshMasters();
       location.hash = `#/${DEFAULT_VIEW}`;
     },
-    logout: () => { setToken(null); setMe(null); location.hash = `#/${DEFAULT_VIEW}`; },
+    logout: () => { setToken(null); setMe(null); setAi(null); location.hash = `#/${DEFAULT_VIEW}`; },
     can: (perm) => Boolean(me?.permissions.includes(perm)),
     refreshMe: async () => setMe(await api.me()),
     filters, setFilters,
@@ -192,8 +205,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Called straight after an upload so the page updates without waiting for
     // the next poll tick.
     refreshData: () => setDataVersion((n) => n + 1),
+    ai, refreshAi,
   }), [me, ready, filters, setFilters, branches, products, divisions, districts,
-       theme, refreshMasters, dataVersion, dataInfo, lastSync]);
+       theme, refreshMasters, dataVersion, dataInfo, lastSync, ai, refreshAi]);
 
   return <C.Provider value={value}>{children}</C.Provider>;
 }

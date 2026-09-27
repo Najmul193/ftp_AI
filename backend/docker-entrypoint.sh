@@ -22,5 +22,17 @@ if [ "${RUN_SEED:-1}" = "1" ]; then
   python -m app.cli.seed
 fi
 
+# Optional AI module: its own migration history and seed, only when enabled.
+if [ "${FTP_AI_MODULE:-0}" = "1" ]; then
+  if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
+    echo "==> AI module migrations"
+    python -m app.ai.cli.migrate
+  fi
+  if [ "${RUN_SEED:-1}" = "1" ]; then
+    echo "==> AI module seed"
+    python -m app.ai.cli.seed_ai
+  fi
+fi
+
 echo "==> uvicorn on 0.0.0.0:${PORT:-8000}"
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
