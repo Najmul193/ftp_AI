@@ -23,6 +23,25 @@ const hint: React.CSSProperties = {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** A proposed product benchmark handed over by another page (the optional AI
+ *  module's "Prepare rate change"). It only pre-fills the form: nothing is
+ *  saved until a person with CONFIG_RATE_EDIT reviews it and presses Save. */
+interface RateDraft { product_code: string; benchmark_rate: string; note: string }
+
+const DRAFT_KEY = "ftp_rate_draft";
+
+/** Read without removing: React may run a state initialiser twice. */
+function readDraft(): RateDraft | null {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_KEY);
+    const d = raw ? JSON.parse(raw) : null;
+    return d && typeof d.product_code === "string" && typeof d.benchmark_rate === "string"
+      ? { product_code: d.product_code, benchmark_rate: d.benchmark_rate,
+          note: typeof d.note === "string" ? d.note.slice(0, 500) : "" }
+      : null;
+  } catch { return null; }
+}
+
 /** Where a component came from, as the label the resolver uses. */
 function Source({ source }: { source: string }) {
   return source === "PRODUCT_OVERRIDE"
@@ -39,6 +58,9 @@ export default function Rates() {
     useState<{ tone: "good" | "critical"; text: string } | null>(null);
 
   const [historyProduct, setHistoryProduct] = useState("");
+  const [draft, setDraft] = useState<RateDraft | null>(readDraft);
+  // Taken once: a reload of this page must not reopen an old proposal.
+  useEffect(() => { try { sessionStorage.removeItem(DRAFT_KEY); } catch { /* blocked */ } }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const globalFormRef = useRef<HTMLDivElement | null>(null);
   const productFormRef = useRef<HTMLDivElement | null>(null);
@@ -82,6 +104,18 @@ export default function Rates() {
   };
 
   const cfg = current.data;
+
+  // Open the drafted product's form once, when the products have loaded; a
+  // later refetch must not pull the reader back to it.
+  const draftOpened = useRef(false);
+  useEffect(() => {
+    if (!draft || !productRates.data || draftOpened.current) return;
+    draftOpened.current = true;
+    const hit = productRates.data.find((x) => x.p.product_code === draft.product_code);
+    if (hit && can("CONFIG_RATE_EDIT")) { setEditingProduct(hit.p); setEditing(null); }
+    else setDraft(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, productRates.data]);
 
   const productHistoryRows = (productHistory.data ?? []).filter(
     (h) => !historyProduct || h.product_code === historyProduct);
@@ -355,8 +389,9 @@ export default function Rates() {
             (x) => x.p.product_code === editingProduct.product_code)?.r ?? null}
           versions={(productHistory.data ?? []).filter((h) =>
             h.product_code === editingProduct.product_code && h.status === "APPROVED")}
-          onCancel={() => setEditingProduct(null)}
-          onSaved={afterSave}
+          draft={draft?.product_code === editingProduct.product_code ? draft : undefined}
+          onCancel={() => { setEditingProduct(null); setDraft(null); }}
+          onSaved={(text) => { setDraft(null); afterSave(text); }}
           onError={(text) => setMessage({ tone: "critical", text })}
         />
         </div>
@@ -652,9 +687,11 @@ function GlobalForm({
   );
 }
 
-function ProductRateForm({ product, rates, versions, onCancel, onSaved, onError }: {
+function ProductRateForm({ product, rates, versions, draft, onCancel, onSaved, onError }: {
   product: Product;
   rates: ProductRates | null;
+  /** A proposed benchmark to start from; see `RateDraft`. */
+  draft?: RateDraft;
   /** The product's approved versions, to warn which a backdated date replaces. */
   versions: ProductRateVersion[];
   onCancel: () => void;
@@ -667,16 +704,18 @@ function ProductRateForm({ product, rates, versions, onCancel, onSaved, onError 
     other: rates?.other_source === "PRODUCT_OVERRIDE",
   }), [rates]);
 
-  const [bench, setBench] = useState(
-    rates?.benchmark_rate == null ? "" : String(rates.benchmark_rate));
+  const [bench, setBench] = useState(draft?.benchmark_rate
+    ?? (rates?.benchmark_rate == null ? "" : String(rates.benchmark_rate)));
   // Inheriting the global default is the norm, so a new version inherits
   // unless the user deliberately unticks the box and enters a product value.
-  const [liqOverride, setLiqOverride] = useState(false);
-  const [othOverride, setOthOverride] = useState(false);
+  // A drafted benchmark change is about the benchmark only, so it keeps the
+  // product's own liquidity and other costs as they are.
+  const [liqOverride, setLiqOverride] = useState(Boolean(draft) && ownToday.liquidity);
+  const [othOverride, setOthOverride] = useState(Boolean(draft) && ownToday.other);
   const [liquidity, setLiquidity] = useState(String(rates?.liquidity_cost ?? ""));
   const [other, setOther] = useState(String(rates?.other_cost ?? ""));
   const [from, setFrom] = useState(today());
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(draft?.note ?? "");
   const [saving, setSaving] = useState(false);
 
   async function save() {
@@ -699,6 +738,14 @@ function ProductRateForm({ product, rates, versions, onCancel, onSaved, onError 
   return (
     <Card title={`Set rates for ${product.product_code}`}
           subtitle={`${product.short_name} · new effective-dated version`}>
+      {draft && (
+        <p style={{ margin: "0 0 12px", fontSize: "var(--fs-base)", color: "var(--text-secondary)",
+                    lineHeight: 1.5 }}>
+          <Pill tone="info">Proposed</Pill>{" "}
+          Benchmark {rate(rates?.benchmark_rate, 2)} % → {draft.benchmark_rate} %, prepared from market
+          data. Check the rate, the date and the note, then save; nothing changes until you do.
+        </p>
+      )}
       <Grid cols="repeat(auto-fit, minmax(170px, 1fr))" gap={12}>
         <div>
           <label style={label} htmlFor="pr-from">Effective from</label>

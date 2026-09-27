@@ -30,6 +30,11 @@ _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _TOKEN_RE = re.compile(r"\b(" + "|".join(KINDS) + r")_([0-9A-HJKMNP-TV-Z]{3})\b")
 
 
+def is_short_code(s: str) -> bool:
+    """An upper-case letter code of up to four letters, like "NET" or "SYL"."""
+    return s.isalpha() and s.isupper() and len(s) <= 4
+
+
 @dataclass(frozen=True, slots=True)
 class Entity:
     kind: str
@@ -94,7 +99,13 @@ class Vault:
                 pat = re.compile(
                     r"(?i)\b(branch|br|code|sol|product|prd)\s*(?:no\.?|#|:|-)?\s*"
                     + re.escape(s) + r"\b")
-                out = pat.sub(lambda m, t=tok: f"{m.group(1)} {t}", out)
+                def as_code(m: re.Match[str], t: str = tok) -> str:
+                    return f"{m.group(1)} {t}"
+                out = pat.sub(as_code, out)
+            elif is_short_code(s):
+                # "NET" is Netrokona's code and also a word: capitals only.
+                pat = re.compile(r"(?<![\w])" + re.escape(s) + r"(?![\w])")
+                out = pat.sub(tok, out)
             elif len(s) >= 3:
                 pat = re.compile(r"(?i)(?<![\w])" + re.escape(s) + r"(?![\w])")
                 out = pat.sub(tok, out)

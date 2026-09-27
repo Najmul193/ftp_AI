@@ -18,28 +18,23 @@ from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.ai import settings_service as ai_settings_svc
 from app.ai.config import ai_settings
 from app.ai.market import catalog, paste, sources
 from app.ai.market.news_tags import tag
 from app.ai.market.tenor import curve_rate, infer_tenor_days
-from app.ai.models import JobRun, MarketNews, MarketObservation, MarketSeries
-from app.core.db import session_scope
+from app.ai.models import Brief, Insight, JobRun, MarketNews, MarketObservation, MarketSeries
 from app.domain.errors import DomainError
 from app.models import AggDailyProduct, Product
 from app.repositories.rates import RateBook
 
 log = logging.getLogger(__name__)
 
-#: job -> minimum minutes between runs.
-JOBS = {"market_news": 15, "market_prices": 180, "market_bb": 120, "prune": 24 * 60}
 DHAKA = ZoneInfo("Asia/Dhaka")
 #: Bangladesh Bank is read only in Dhaka business hours, Sunday to Thursday,
 #: and not again for a day after it has asked for a human.
 BB_HOURS = (dtime(9, 30), dtime(20, 0))
 BB_WEEKEND = (4, 5)          # Friday, Saturday
 BB_BACKOFF = timedelta(hours=24)
-_LOCK_BASE = 820_270_000
 
 
 # --- series and observations ------------------------------------------------- #
@@ -194,65 +189,22 @@ def collect_news(db: Session) -> dict:
 
 
 def prune(db: Session) -> dict:
+    def gone(stmt) -> int:
+        return int(getattr(db.execute(stmt), "rowcount", 0) or 0)
+
     now = datetime.now(timezone.utc)
-    n = db.execute(delete(MarketNews).where(MarketNews.fetched_at < now - timedelta(days=90))).rowcount
-    j = db.execute(delete(JobRun).where(JobRun.started_at < now - timedelta(days=30))).rowcount
+    n = gone(delete(MarketNews).where(MarketNews.fetched_at < now - timedelta(days=90)))
+    j = gone(delete(JobRun).where(JobRun.started_at < now - timedelta(days=30)))
+    i = gone(delete(Insight).where(Insight.status == "resolved",
+                                   Insight.resolved_at < now - timedelta(days=180)))
+    b = gone(delete(Brief).where(Brief.created_at < now - timedelta(days=90)))
     # The egress log refuses deletes unless this transaction says it is the
     # retention job.
     db.execute(text("SET LOCAL ai.retention_purge = 'on'"))
     days = ai_settings().AI_REQUEST_RETENTION_DAYS
-    r = db.execute(text("DELETE FROM ai_requests WHERE created_at < now() - make_interval(days => :d)"),
-                   {"d": days}).rowcount
-    return {"news": n, "job_runs": j, "ai_requests": r}
-
-
-_RUNNERS = {"market_news": collect_news, "market_prices": collect_prices,
-            "market_bb": collect_bb, "prune": prune}
-
-
-def run_job(job: str, trigger: str = "schedule") -> dict:
-    """Run one job now, if AI is on and no other process is running it."""
-    with session_scope() as db:
-        if not ai_settings_svc.state(db).enabled:
-            return {"job": job, "status": "skipped", "reason": "AI is switched off"}
-        key = _LOCK_BASE + list(_RUNNERS).index(job)
-        if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}):
-            return {"job": job, "status": "skipped", "reason": "already running elsewhere"}
-        run = JobRun(job=job, trigger=trigger, status="running")
-        db.add(run)
-        db.flush()
-        try:
-            runner = _RUNNERS[job]
-            detail = runner(db, manual=True) if job == "market_bb" and trigger == "manual" \
-                else runner(db)
-            run.status = ("blocked" if detail.get("blocked")
-                          else "skipped" if detail.get("skipped")
-                          else "partial" if detail.get("errors") else "ok")
-            run.detail = detail
-        except Exception as exc:  # noqa: BLE001 - a job failure is recorded, never raised
-            log.exception("AI job %s failed", job)
-            db.rollback()
-            with session_scope() as s2:
-                s2.add(JobRun(job=job, trigger=trigger, status="failed",
-                              finished_at=datetime.now(timezone.utc), detail={"error": str(exc)}))
-            return {"job": job, "status": "failed", "error": str(exc)}
-        if run.status == "skipped":
-            db.delete(run)                     # nothing happened; keep the log readable
-            return {"job": job, "status": "skipped", "reason": detail.get("skipped")}
-        run.finished_at = datetime.now(timezone.utc)
-        return {"job": job, "status": run.status, **detail}
-
-
-def due_jobs(db: Session) -> list[str]:
-    """Jobs whose last successful run is older than their interval."""
-    out = []
-    now = datetime.now(timezone.utc)
-    for job, minutes in JOBS.items():
-        last = db.scalar(select(func.max(JobRun.started_at))
-                         .where(JobRun.job == job, JobRun.status.in_(("ok", "partial"))))
-        if last is None or now - last >= timedelta(minutes=minutes):
-            out.append(job)
-    return out
+    r = gone(text("DELETE FROM ai_requests WHERE created_at < now() - make_interval(days => :d)")
+             .bindparams(d=days))
+    return {"news": n, "job_runs": j, "insights": i, "briefs": b, "ai_requests": r}
 
 
 # --- treasury entries -------------------------------------------------------- #
@@ -271,7 +223,7 @@ def save_entries(db: Session, user_id: int, entries: list[dict], source: str) ->
 
 # --- reading ----------------------------------------------------------------- #
 
-def _latest(db: Session) -> dict[str, list[MarketObservation]]:
+def latest_observations(db: Session) -> dict[str, list[MarketObservation]]:
     """The last 60 observations of every series, newest first."""
     rn = func.row_number().over(partition_by=MarketObservation.series_id,
                                 order_by=desc(MarketObservation.obs_date)).label("rn")
@@ -305,7 +257,7 @@ def _curve(latest: dict[str, list[MarketObservation]]) -> list[dict]:
 
 
 def overview(db: Session, *, include_balances: bool) -> dict:
-    latest = _latest(db)
+    latest = latest_observations(db)
     today = date.today()
     series = []
     for s in catalog.SERIES:
@@ -327,8 +279,7 @@ def overview(db: Session, *, include_balances: bool) -> dict:
         })
     curve = _curve(latest)
     return {"series": series, "curve": curve,
-            "benchmarks": benchmarks(db, curve, include_balances=include_balances),
-            "jobs": job_status(db)}
+            "benchmarks": benchmarks(db, curve, include_balances=include_balances)}
 
 
 def benchmarks(db: Session, curve: list[dict], *, include_balances: bool) -> dict:
@@ -377,19 +328,6 @@ def benchmarks(db: Session, curve: list[dict], *, include_balances: bool) -> dic
             "monthly_impact": impact,
         })
     return {"items": items, "balances_as_of": as_of}
-
-
-def job_status(db: Session) -> dict:
-    out = {}
-    for job in JOBS:
-        last = db.scalar(select(JobRun).where(JobRun.job == job).order_by(desc(JobRun.id)).limit(1))
-        ok = db.scalar(select(func.max(JobRun.finished_at))
-                       .where(JobRun.job == job, JobRun.status.in_(("ok", "partial"))))
-        out[job] = {"last_status": last.status if last else None,
-                    "last_run": last.started_at if last else None,
-                    "last_success": ok,
-                    "errors": (last.detail or {}).get("errors") if last else None}
-    return out
 
 
 def news(db: Session, *, tag_: str | None, region: str | None, min_relevance: int,

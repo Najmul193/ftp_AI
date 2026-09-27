@@ -229,7 +229,10 @@ def _auctions(text: str) -> ParseResult:
         body = _REISSUE.sub(" ", row)
         # Remaining maturity comes before the instrument's name in the row:
         # a re-issued 20-year bond with two years left prices as a 2-year.
-        after_isin = body[_ISIN.search(body).end():]
+        isin = _ISIN.search(body)
+        if isin is None:                      # removed with a re-issue note
+            continue
+        after_isin = body[isin.end():]
         tenor = _TENOR.search(after_isin)
         if tenor is None:
             continue

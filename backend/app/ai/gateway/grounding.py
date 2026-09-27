@@ -24,7 +24,12 @@ from typing import Iterable
 
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _TOKEN = re.compile(r"\b(?:BR|PRD|DIST|DIV|ACCT|USER)_[0-9A-Z]{3}\b")
-_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
+_MON = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+        r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?")
+#: Dates are not claims: ISO, numeric, and written ("23 Sep", "Sep 23, 2026").
+_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
+                   r"|\b\d{1,2}(?:st|nd|rd|th)?\s+" + _MON + r"(?:,?\s+\d{4})?(?![\w])"
+                   r"|\b" + _MON + r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b", re.I)
 _NUM = re.compile(r"(?<![\w.])[-+−]?\d{1,3}(?:,\d{2,3})*(?:\.\d+)?(?![\d])|(?<![\w.])[-+−]?\d+(?:\.\d+)?(?![\d])")
 _ORDINAL = re.compile(r"^(st|nd|rd|th)\b")
 
@@ -77,6 +82,20 @@ def _close(a: Decimal, b: Decimal) -> bool:
     return diff <= max(unit, abs(b) * Decimal("0.005"))
 
 
+MAX_FACTS_FOR_ALL_DIFFERENCES = 40
+
+
+def differences_by_line(text: str) -> list[Decimal]:
+    """The numbers in `text`, plus the differences between numbers stated on
+    the same line -- the pairs a narrator compares ("8.89% to 8.86%")."""
+    out: list[Decimal] = []
+    for line in text.splitlines():
+        vals = [v for _, v, _ in numbers_in(line)]
+        out += vals
+        out += [abs(a - b) for a, b in combinations(vals, 2)]
+    return out
+
+
 def expand_facts(facts: Iterable[Decimal], *, with_differences: bool = True) -> set[Decimal]:
     """The supplied numbers plus the forms a narrator may reasonably write.
 
@@ -90,7 +109,11 @@ def expand_facts(facts: Iterable[Decimal], *, with_differences: bool = True) -> 
         out.add(abs(f))
         out.add(f * 100)          # 0.6 pp -> 60 bp
         out.add(f / 100)
-    if with_differences and len(base) <= 300:
+    # Every difference of a large set covers the number line densely enough to
+    # "verify" almost anything: 150 facts give 11,000 differences. Past a
+    # small set, a caller supplies the differences that make sense itself
+    # (`differences_by_line`).
+    if with_differences and len(base) <= MAX_FACTS_FOR_ALL_DIFFERENCES:
         for a, b in combinations(base, 2):
             d = abs(a - b)
             out.add(d)

@@ -167,3 +167,81 @@ class JobRun(AiBase):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20))
     detail: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class Insight(AiBase):
+    """Something a detector found that a person should know or decide.
+
+    Written by `insights.engine` only. At most one active row per (kind,
+    subject, scope_key); when the condition clears the row is resolved, and a
+    later recurrence is a new row.
+    """
+
+    __tablename__ = "ai_insights"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    #: What it is about: a product code, a series code, a branch code, or "".
+    subject: Mapped[str] = mapped_column(String(60), server_default=text("''"))
+    #: HO | DIV:<id> | PUBLIC -- who may see it (see `insights.visibility`).
+    scope_key: Mapped[str] = mapped_column(String(30))
+    #: critical | serious | warning | info
+    severity: Mapped[str] = mapped_column(String(12))
+    #: Display text. Entity names appear as {BR:code} placeholders, filled
+    #: in for the reader at read time.
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    money_at_stake: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    #: What the amount measures, e.g. "per month", "over the week".
+    money_basis: Mapped[str | None] = mapped_column(String(40))
+    evidence: Mapped[list] = mapped_column(JSONB)
+    action: Mapped[dict | None] = mapped_column(JSONB)
+    sources: Mapped[list] = mapped_column(JSONB)
+    business_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(12), server_default=text("'active'"))
+    #: When it was raised -- or re-raised at a higher severity, which makes it
+    #: unread again.
+    raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InsightMark(AiBase):
+    """One reader's state for one insight: read, useful or not, dismissed."""
+
+    __tablename__ = "ai_insight_marks"
+
+    insight_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_insights.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    useful: Mapped[bool | None] = mapped_column(Boolean)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 onupdate=func.now())
+
+
+class Brief(AiBase):
+    """An AI write-up of the morning brief. The standard brief is composed by
+    code on every read and is not stored; only what a provider wrote is."""
+
+    __tablename__ = "ai_briefs"
+    __table_args__ = (UniqueConstraint("scope_key", "brief_date", "lang"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(30))
+    brief_date: Mapped[date] = mapped_column(Date)
+    lang: Mapped[str] = mapped_column(String(5))
+    #: The inputs it was written from; a different fingerprint means the data
+    #: has moved since, and the write-up is shown as out of date.
+    fingerprint: Mapped[str] = mapped_column(String(120))
+    narrative: Mapped[str] = mapped_column(Text)
+    #: The masked facts that were sent, shown under "What was sent to AI".
+    sent: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(200))
+    model: Mapped[str | None] = mapped_column(String(120))
+    request_id: Mapped[int | None] = mapped_column(BigInteger)
+    grounded: Mapped[bool | None] = mapped_column(Boolean)
+    unverified: Mapped[list | None] = mapped_column(JSONB)
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,7 +1,7 @@
 """In-process scheduler for the AI module's jobs.
 
 One background thread. Every job re-checks the master switch and takes an
-advisory lock (see `market.service.run_job`), so it is safe with several API
+advisory lock (see `jobs.run_job`), so it is safe with several API
 workers and does nothing while AI is off.
 
 A host that sleeps when idle (a free Render web service) stops this thread
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.ai.config import ai_settings
-from app.ai.market import service
+from app.ai import jobs
 
 log = logging.getLogger(__name__)
 _sched: BackgroundScheduler | None = None
@@ -39,12 +39,12 @@ def start() -> None:
                                           "misfire_grace_time": 300})
     # Staggered first runs: not all at once, and not during start-up.
     first = datetime.now().astimezone() + timedelta(seconds=45)
-    for i, (job, minutes) in enumerate(service.JOBS.items()):
-        s.add_job(service.run_job, "interval", minutes=minutes, args=[job],
+    for i, (job, minutes) in enumerate(jobs.JOBS.items()):
+        s.add_job(jobs.run_job, "interval", minutes=minutes, args=[job],
                   id=f"ai:{job}", next_run_time=first + timedelta(seconds=20 * i))
     s.start()
     _sched = s
-    log.info("AI scheduler started: %s", ", ".join(service.JOBS))
+    log.info("AI scheduler started: %s", ", ".join(jobs.JOBS))
 
 
 def stop() -> None:

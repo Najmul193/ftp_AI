@@ -15,6 +15,8 @@ export interface AiStatus {
   can_chat: boolean;
   can_admin: boolean;
   can_audit: boolean;
+  /** Unread serious and critical insights: the bell's count. */
+  unread: number;
 }
 
 export interface Preset {
@@ -164,3 +166,88 @@ export const marketApi = {
   refresh: () => request<{ results: { job: string; status: string }[] }>(
     "/ai/market/refresh", { method: "POST" }),
 };
+
+// --- insights and the morning brief ------------------------------------------
+
+export type Severity = "critical" | "serious" | "warning" | "info";
+
+export interface RateDraftAction {
+  type: "prepare_rate_change"; product_code: string; current: string; suggested: string;
+  tenor: string; note: string;
+}
+
+export interface Evidence { label: string; value: string; unit: "pct" | "bp" | "bdt" | "pct_change" | "date" | "text" }
+
+export interface Insight {
+  id: number; kind: string; subject: string; scope: string; severity: Severity;
+  title: string; body: string; money_at_stake: number | null; money_basis: string | null;
+  evidence: Evidence[]; action: RateDraftAction | null;
+  sources: { label: string; url?: string; metric?: string }[];
+  business_date: string | null; status: "active" | "resolved";
+  raised_at: string; last_seen_at: string; resolved_at: string | null;
+  read: boolean; useful: boolean | null; dismissed: boolean;
+}
+
+export interface BriefDecision {
+  kind: string; subject: string; title: string; severity: Severity;
+  money_at_stake: number | null; money_basis: string | null;
+  action: RateDraftAction | null; insight_id: number | null;
+}
+
+export interface Brief {
+  scope: string; scope_label: string; lang: "en" | "bn";
+  standard: {
+    headline: string;
+    sections: { key: string; title: string; lines: string[] }[];
+    decisions: BriefDecision[];
+    news: { title: string; source: string; url: string; published_at: string | null }[];
+    as_of: { today: string; business_date: string | null; market: string | null };
+  };
+  ai: null | {
+    narrative: string; grounded: boolean | null; unverified: string[];
+    provider: string | null; model: string | null; created_at: string;
+    request_id: number | null; sent: string; current: boolean;
+  };
+  can_write: boolean;
+  can_rewrite: boolean;
+}
+
+export const insightApi = {
+  list: (p: { status?: "active" | "resolved"; include_dismissed?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(p).forEach(([k, v]) => v !== undefined && q.set(k, String(v)));
+    return request<{ items: Insight[]; unread: number }>(`/ai/insights?${q}`);
+  },
+  read: (ids: number[] | "all") => request<{ marked: number }>("/ai/insights/read",
+    { method: "POST", ...json(ids === "all" ? { all: true } : { ids }) }),
+  feedback: (id: number, b: { useful?: boolean | null; dismissed?: boolean }) =>
+    request<{ ok: boolean }>(`/ai/insights/${id}/feedback`, { method: "POST", ...json(b) }),
+  refresh: () => request<{ status: string }>("/ai/insights/refresh", { method: "POST" }),
+  brief: (lang: "en" | "bn") => request<Brief>(`/ai/brief?lang=${lang}`),
+  writeBrief: (lang: "en" | "bn", rewrite = false) =>
+    request<Brief>("/ai/brief/write", { method: "POST", ...json({ lang, rewrite }) }),
+};
+
+/** Taka the way a Bangladeshi banker reads it: crore, lakh, taka. */
+export function taka(v: number | string | null | undefined): string {
+  if (v == null || v === "") return "—";
+  const x = Number(v);
+  const a = Math.abs(x);
+  const s = x < 0 ? "-" : "";
+  if (a >= 1e7) return `${s}৳${(a / 1e7).toFixed(2)} crore`;
+  if (a >= 1e5) return `${s}৳${(a / 1e5).toFixed(2)} lakh`;
+  return `${s}৳${Math.round(a).toLocaleString("en-IN")}`;
+}
+
+/** Hand a proposed benchmark to Rate configuration, which opens its product
+ *  form pre-filled. Nothing changes until a person saves that form. */
+export const RATE_DRAFT_KEY = "ftp_rate_draft";
+
+export function prepareRateChange(a: RateDraftAction) {
+  try {
+    sessionStorage.setItem(RATE_DRAFT_KEY, JSON.stringify({
+      product_code: a.product_code, benchmark_rate: a.suggested, note: a.note,
+    }));
+  } catch { /* storage blocked: the form simply opens empty */ }
+  location.hash = "#/rates";
+}

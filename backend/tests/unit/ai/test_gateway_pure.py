@@ -214,3 +214,52 @@ def test_redact_removes_findings_but_keeps_the_rest():
 def test_redact_leaves_public_place_names():
     assert dlp.redact("public", "Floods in Gazipur Gulshan", known={"Gazipur Gulshan"}) \
         == "Floods in Gazipur Gulshan"
+
+
+# --- short codes that are also words ------------------------------------------ #
+
+NETROKONA = Entity("DIST", "NET", "Netrokona", ("Netrokona",))
+
+
+def test_a_district_code_that_is_a_word_is_matched_only_in_capitals():
+    # "NET" is Netrokona's code. "Net FTP profit" is not a leak; "NET" is.
+    known = {"NET", "Netrokona"}
+    assert dlp.scan([("bank", "Net FTP profit this week 1.07 cr")], known) == []
+    assert dlp.scan([("bank", "net interest income")], known) == []
+    assert [h.rule for h in dlp.scan([("bank", "district NET fell")], known)] == ["known_identifier"]
+    assert [h.rule for h in dlp.scan([("bank", "netrokona fell")], known)] == ["known_identifier"]
+
+
+def test_masking_leaves_the_word_and_takes_the_code():
+    v = Vault()
+    v.register([NETROKONA])
+    tok = v.token("DIST", "NET")
+    assert v.mask_text("why is net profit down?") == "why is net profit down?"
+    assert v.mask_text("why is NET down?") == f"why is {tok} down?"
+    assert v.mask_text("why is Netrokona down?") == f"why is {tok} down?"
+
+
+def test_written_dates_are_not_claims():
+    g = grounding.check("On 23 Sep the bill cleared at 8.32%, from Sep 16, 2026.",
+                        [Decimal("8.32")])
+    assert g.ok and g.checked == 1
+
+
+def test_a_large_fact_set_does_not_verify_everything():
+    # 150 facts would give 11,000 pairwise differences, dense enough to
+    # "verify" an invented figure. Only differences on the same line count.
+    text = "\n".join(f"- product {chr(65 + i % 26)}: benchmark {Decimal(800 + i) / 100}%, "
+                     f"market {Decimal(8500 + 13 * i) / 1000}%" for i in range(75))
+    facts = grounding.differences_by_line(text)
+    # 1.23 is the gap between two different products' rates: not a claim
+    # anything in the facts supports.
+    assert not grounding.check("the gap is 1.23 points", facts).ok
+    # Product 10's own benchmark-to-market gap is.
+    assert grounding.check("product K: benchmark 8.1% against market 8.63%, a gap of 0.53",
+                           facts).ok
+
+
+def test_words_that_start_like_months_do_not_hide_numbers():
+    # "market 8.63%" is not a date, and its number must still be checked.
+    g = grounding.check("market 8.63%, marginal 9.1%, decent 7.7%", [Decimal("8.63")])
+    assert g.checked == 3 and set(g.unverified) == {"9.1", "7.7"}

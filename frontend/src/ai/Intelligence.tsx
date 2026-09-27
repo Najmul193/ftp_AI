@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Chart, { axisCommon, baseOption, useTokens } from "../components/Chart";
 import { Button, Card, Empty, Grid, MiniButton, Pill, Stat, Table } from "../components/ui";
 import { compact, shortDate } from "../format";
@@ -6,6 +6,8 @@ import { useApp, useAsync } from "../state";
 import {
   BenchmarkRow, marketApi, MarketOverview, MarketSeries, NewsItem, ParseResult,
 } from "./api";
+import BriefCard from "./Brief";
+import InsightFeed from "./Insights";
 
 const hint: React.CSSProperties = {
   fontSize: "var(--fs-xs)", color: "var(--text-muted)", margin: "4px 0 0", lineHeight: 1.45,
@@ -55,8 +57,24 @@ function ago(iso: string | null) {
   return `${Math.round(m / 1440)} d ago`;
 }
 
+/** `#/intel?focus=12` opens insight 12: the bell and the brief link here. */
+function useFocus() {
+  const read = () => {
+    const v = new URLSearchParams(location.hash.split("?")[1] ?? "").get("focus");
+    return v ? Number(v) : null;
+  };
+  const [focus, setFocus] = useState(read);
+  useEffect(() => {
+    const on = () => setFocus(read());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return focus;
+}
+
 export default function Intelligence() {
   const { can, me, ai } = useApp();
+  const focus = useFocus();
   const [tick, setTick] = useState(0);
   const ov = useAsync(() => marketApi.overview(), [tick]);
   const [refreshing, setRefreshing] = useState(false);
@@ -85,6 +103,11 @@ export default function Intelligence() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <BriefCard />
+      <InsightFeed focus={focus} />
+
+      <h2 style={{ margin: "10px 0 0", fontSize: "var(--fs-md)", fontWeight: 650,
+                   color: "var(--text-primary)" }}>Market</h2>
       {/* --- freshness ---------------------------------------------------- */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
                     fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>

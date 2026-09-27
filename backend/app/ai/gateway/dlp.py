@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from app.ai.gateway.tokenizer import is_short_code
+
 #: Nine or more consecutive digits, allowing the separators people type in
 #: account numbers. Amounts never reach this length: the generaliser prints
 #: them in crore to three significant figures.
@@ -63,11 +65,18 @@ def _rules(known: Iterable[str], numeric_known: Iterable[str]) -> list[_Rule]:
     rules = [_Rule("account_number_shape", _ACCOUNT_SHAPE, _EVERYWHERE),
              _Rule("email", _EMAIL, _EVERYWHERE),
              _Rule("phone", _PHONE_BD, _EVERYWHERE)]
-    names = sorted({k.strip() for k in known if k and len(k.strip()) >= 3
-                    and not k.strip().isdigit()}, key=len, reverse=True)
+    spellings = {k.strip() for k in known if k and len(k.strip()) >= 3 and not k.strip().isdigit()}
+    # A short upper-case code ("NET" for Netrokona, "SUN", "BAR") is also an
+    # English word. It is matched as stored, in capitals; its name, and every
+    # longer spelling, is matched in any case.
+    codes_ = sorted((s for s in spellings if is_short_code(s)), key=len, reverse=True)
+    names = sorted(spellings.difference(codes_), key=len, reverse=True)
     if names:
         rules.append(_Rule("known_identifier", re.compile(
             r"(?i)(?<![\w])(?:" + "|".join(map(re.escape, names)) + r")(?![\w])"), _BANK))
+    if codes_:
+        rules.append(_Rule("known_identifier", re.compile(
+            r"(?<![\w])(?:" + "|".join(map(re.escape, codes_)) + r")(?![\w])"), _BANK))
     codes = sorted({c.strip() for c in numeric_known if c and c.strip().isdigit()},
                    key=len, reverse=True)
     if codes:
@@ -107,8 +116,9 @@ def redact(kind: str, text: str, known: Iterable[str], *,
         if kind not in r.kinds:
             continue
         if r.group:
-            out = r.rx.sub(lambda m, n=r.name: m.group(0)[:m.start(1) - m.start(0)]
-                           + f"[REDACTED:{n}]", out)
+            def keep_label(m: re.Match[str], n: str = r.name) -> str:
+                return m.group(0)[:m.start(1) - m.start(0)] + f"[REDACTED:{n}]"
+            out = r.rx.sub(keep_label, out)
         else:
             out = r.rx.sub(f"[REDACTED:{r.name}]", out)
     return out

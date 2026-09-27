@@ -79,3 +79,19 @@ def _label(days: int) -> str:
     if days < 365:
         return f"{days}D" if days in (91, 182, 364) else f"{round(days / 30)}M"
     return f"{round(days / 365)}Y"
+
+
+def points_used(tenors: list[int], days: int) -> list[int]:
+    """The curve tenors `curve_rate` reads for `days`: one, or the two either side."""
+    ts = sorted(tenors)
+    if not ts:
+        return []
+    if days <= ts[0]:
+        return [ts[0]]
+    if days >= ts[-1]:
+        return [ts[-1]]
+    if days in ts:
+        return [days]
+    lo = max(t for t in ts if t < days)
+    hi = min(t for t in ts if t > days)
+    return [lo, hi]

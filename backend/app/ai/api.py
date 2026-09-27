@@ -13,14 +13,19 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.ai import jobs
 from app.ai import settings_service as svc
 from app.ai.config import ai_settings
 from app.ai.market import catalog, paste
 from app.ai.market import service as market
 from app.ai.context.entities import user_vault
+from app.ai.context.fact_sheet import fingerprint as data_fingerprint
+from app.ai.context.fact_sheet import names as org_names
+from app.ai.insights import engine
+from app.ai.insights.facts import fill_names
 from app.ai.gateway import gateway as gw
 from app.ai.gateway.gateway import (
     AiUnavailable, Caller, GatewayBlocked, GatewayError, GatewayRequest, Segment, Turn,
@@ -44,6 +49,10 @@ def _actor(user: CurrentUser) -> svc.Actor:
 
 def _caller(user: CurrentUser) -> Caller:
     return Caller(user.id, user.username)
+
+
+def _reader(user: CurrentUser) -> engine.Reader:
+    return engine.Reader(user.id, user.scope_level, user.scope_id)
 
 
 def _ho_admin(user: Annotated[CurrentUser, Depends(require("AI_ADMIN"))]) -> CurrentUser:
@@ -96,6 +105,9 @@ def ai_status(db: DbDep, user: ActiveUser) -> dict:
         "can_chat": s.enabled and user.has("AI_CHAT"),
         "can_admin": user.has("AI_ADMIN") and user.scope_level is ScopeLevel.HO,
         "can_audit": user.has("AI_AUDIT"),
+        # Rides the 15-second status poll, so the bell needs no poll of its own.
+        "unread": (engine.unread_count(db, _reader(user))
+                   if s.enabled and user.has("AI_VIEW") else 0),
     }
 
 
@@ -308,7 +320,8 @@ MarketEditor = Annotated[CurrentUser, Depends(_market_editor)]
 @router.get("/market/overview", dependencies=_view)
 def market_overview(db: DbDep, user: ActiveUser) -> dict:
     # Product balances are bank-wide figures: head office only.
-    return market.overview(db, include_balances=user.scope_level is ScopeLevel.HO)
+    return {**market.overview(db, include_balances=user.scope_level is ScopeLevel.HO),
+            "jobs": jobs.status(db)}
 
 
 @router.get("/market/series/{code}", dependencies=_view)
@@ -365,7 +378,8 @@ class EntriesIn(BaseModel):
 
 
 @router.post("/market/entries", dependencies=[Depends(require_ai_enabled)])
-def market_entries(body: EntriesIn, db: DbDep, user: MarketEditor) -> dict:
+def market_entries(body: EntriesIn, db: DbDep, user: MarketEditor,
+                   background: BackgroundTasks) -> dict:
     today = date.today()
     for e in body.entries:
         s = catalog.BY_CODE.get(e.code)
@@ -382,15 +396,19 @@ def market_entries(body: EntriesIn, db: DbDep, user: MarketEditor) -> dict:
                                       body.source)
     except ValueError as exc:
         raise HTTPException(422, {"code": "bad_series", "message": str(exc)}) from exc
+    if changed:
+        # After the commit: new rates can raise or clear insights straight away.
+        background.add_task(jobs.run_job, "insights", "event")
     return {"saved": len(body.entries), "changed": changed}
 
 
 @router.post("/market/refresh", dependencies=[Depends(require_ai_enabled)])
 def market_refresh(_user: HoAdmin) -> dict:
     """Collect prices and news now instead of waiting for the schedule."""
-    return {"results": [market.run_job("market_bb", "manual"),
-                        market.run_job("market_prices", "manual"),
-                        market.run_job("market_news", "manual")]}
+    return {"results": [jobs.run_job("market_bb", "manual"),
+                        jobs.run_job("market_prices", "manual"),
+                        jobs.run_job("market_news", "manual"),
+                        jobs.run_job("insights", "manual")]}
 
 
 @router.post("/jobs/tick", include_in_schema=False)
@@ -399,5 +417,135 @@ def jobs_tick(db: DbDep, x_ai_jobs_token: Annotated[str | None, Header()] = None
     expected = ai_settings().AI_JOBS_TOKEN
     if not expected or not x_ai_jobs_token or not secrets.compare_digest(x_ai_jobs_token, expected):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "bad or missing job token")
-    due = market.due_jobs(db)
-    return {"ran": [market.run_job(j, "tick") for j in due]}
+    due = jobs.due_jobs(db)
+    return {"ran": [jobs.run_job(j, "tick") for j in due]}
+
+
+# --- insights ---------------------------------------------------------------- #
+
+def _insight_out(i, m, names: dict[str, str]) -> dict:
+    return {
+        "id": i.id, "kind": i.kind, "subject": i.subject, "scope": i.scope_key,
+        "severity": i.severity, "title": fill_names(i.title, names),
+        "body": fill_names(i.body, names), "money_at_stake": i.money_at_stake,
+        "money_basis": i.money_basis, "evidence": i.evidence, "action": i.action,
+        "sources": i.sources, "business_date": i.business_date, "status": i.status,
+        "raised_at": i.raised_at, "last_seen_at": i.last_seen_at, "resolved_at": i.resolved_at,
+        "read": bool(m and m.read_at and m.read_at >= i.raised_at),
+        "useful": m.useful if m else None,
+        "dismissed": bool(m and m.dismissed_at and m.dismissed_at >= i.raised_at),
+    }
+
+
+@router.get("/insights", dependencies=_view)
+def insights(db: DbDep, user: ActiveUser,
+             status_: Literal["active", "resolved"] = Query("active", alias="status"),
+             include_dismissed: bool = False, limit: int = Query(100, ge=1, le=300)) -> dict:
+    rows = engine.feed(db, _reader(user), status=status_, include_dismissed=include_dismissed,
+                       limit=limit)
+    names = org_names(db)
+    return {"items": [_insight_out(i, m, names) for i, m in rows],
+            "unread": engine.unread_count(db, _reader(user))}
+
+
+class MarkIn(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=300)
+    #: Mark every visible active insight read.
+    all: bool = False
+
+
+@router.post("/insights/read", dependencies=_view)
+def insights_read(body: MarkIn, db: DbDep, user: ActiveUser) -> dict:
+    r = _reader(user)
+    ids = engine.unread_ids(db, r) if body.all else [
+        i for i in body.ids if engine.get_visible(db, r, i) is not None]
+    if ids:
+        engine.mark(db, r, ids, read=True)
+    return {"marked": len(ids)}
+
+
+class FeedbackIn(BaseModel):
+    useful: bool | None = None
+    dismissed: bool | None = None
+
+
+@router.post("/insights/{iid}/feedback", dependencies=_view)
+def insight_feedback(iid: int, body: FeedbackIn, db: DbDep, user: ActiveUser) -> dict:
+    r = _reader(user)
+    if engine.get_visible(db, r, iid) is None:
+        raise HTTPException(404, "no such insight")
+    engine.mark(db, r, [iid], read=True, useful=body.useful, dismissed=body.dismissed)
+    return {"ok": True}
+
+
+@router.post("/insights/refresh", dependencies=_view)
+def insights_refresh(user: ActiveUser) -> dict:
+    """Run the detectors now. Head office only: it re-reads the whole book."""
+    if user.scope_level is not ScopeLevel.HO:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "refreshing insights is head office only")
+    return jobs.run_job("insights", "manual", force=True)
+
+
+# --- morning brief ----------------------------------------------------------- #
+
+def _brief_out(db, user: CurrentUser, lang: str) -> dict:
+    key = engine.scope_key_for(user.scope_level, user.scope_id)
+    fs, _found, std = engine.standard(db, key)
+    names = fs.names
+    visible = {(i.kind, i.subject): i.id for i, _ in engine.feed(db, _reader(user), limit=300)}
+    std = {
+        **std,
+        "headline": fill_names(std["headline"], names),
+        "sections": [{**s, "title": fill_names(s["title"], names),
+                      "lines": [fill_names(x, names) for x in s["lines"]]} for s in std["sections"]],
+        "decisions": [{**d, "title": fill_names(d["title"], names),
+                       "insight_id": visible.get((d["kind"], d["subject"]))}
+                      for d in std["decisions"]],
+    }
+    b = engine.stored(db, key, lang)
+    s = svc.state(db)
+    return {
+        "scope": key, "scope_label": fs.scope_label, "lang": lang, "standard": std,
+        "ai": None if b is None else {
+            "narrative": b.narrative, "grounded": b.grounded, "unverified": b.unverified or [],
+            "provider": b.provider, "model": b.model, "created_at": b.created_at,
+            "request_id": b.request_id, "sent": b.sent,
+            # Written before the latest upload, rate or market change.
+            "current": b.fingerprint == data_fingerprint(db, news=False),
+        },
+        "can_write": s.enabled and s.active_provider_id is not None,
+        "can_rewrite": s.enabled and s.active_provider_id is not None and user.has("AI_CHAT"),
+    }
+
+
+@router.get("/brief", dependencies=_view)
+def get_brief(db: DbDep, user: ActiveUser, lang: Literal["en", "bn"] = "en") -> dict:
+    return _brief_out(db, user, lang)
+
+
+class BriefIn(BaseModel):
+    lang: Literal["en", "bn"] = "en"
+    #: Write it again although today's write-up is current.
+    rewrite: bool = False
+
+
+@router.post("/brief/write", dependencies=_view)
+def write_brief(body: BriefIn, db: DbDep, user: ActiveUser) -> dict:
+    """Have the active provider write the brief up. One write-up per scope,
+    day and language is shared by everyone who reads it; writing it again
+    while it is still current needs AI_CHAT."""
+    key = engine.scope_key_for(user.scope_level, user.scope_id)
+    have = engine.stored(db, key, body.lang)
+    if have is not None and have.fingerprint == data_fingerprint(db, news=False):
+        if not body.rewrite:
+            return _brief_out(db, user, body.lang)
+        if not user.has("AI_CHAT"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "today's write-up is current; rewriting it needs AI_CHAT")
+    try:
+        engine.narrate(db, _caller(user), key, body.lang, user.id)
+    except engine.BriefUnavailable as exc:
+        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
+    except (AiUnavailable, GatewayBlocked, GatewayError) as exc:
+        raise _fail(exc) from exc
+    return _brief_out(db, user, body.lang)

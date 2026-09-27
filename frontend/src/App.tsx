@@ -17,6 +17,7 @@ import Rates from "./views/Rates";
 import Upload from "./views/Upload";
 import AiAdmin from "./ai/AiAdmin";
 import Intelligence from "./ai/Intelligence";
+import Bell from "./ai/Bell";
 
 //: Basic overview is first and is where a session lands after sign-in.
 //: `currentView` defaults to the same id, so the landing page and the first
@@ -40,9 +41,9 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
   { id: "consolidated", label: "Consolidated", group: "Analyse", icon: "layers",
     desc: "Every account-day as one row, as in the Consolidated Data sheet." },
   // Shown only while the AI module is loaded and switched on.
-  { id: "intel", label: "Market intelligence", group: "Intelligence", icon: "globe",
+  { id: "intel", label: "Intelligence", group: "Intelligence", icon: "globe",
     perm: "AI_VIEW", ai: true,
-    desc: "The taka curve and global rates next to your FTP benchmarks, and the news that moves them." },
+    desc: "This morning's brief, what needs a decision, and the market behind it." },
   { id: "upload", label: "Upload", group: "Operate", icon: "upload", perm: "UPLOAD_VIEW",
     desc: "Load bank data files and follow each batch through processing." },
   { id: "admin", label: "Master data", group: "Operate", icon: "database",
@@ -188,6 +189,7 @@ function Shell() {
                 </span>
               )}
               <IconButton icon="refresh" label="Refresh now" onClick={refreshData} />
+              <Bell />
               {ai?.enabled && !narrow && (
                 <a href={ai.can_admin ? "#/ai" : undefined} title={ai.provider
                    ? `AI on · ${ai.provider.label} (${ai.provider.model})` : "AI on"}

@@ -45,12 +45,14 @@ source_modules =
     app.ai.cli
     app.ai.models
     app.ai.crypto
+    app.ai.insights
+    app.ai.jobs
 forbidden_modules =
     app.ai.providers
 allow_indirect_imports = True
 
 [importlinter:contract:gateway-rules-are-pure]
-name = the gateway's privacy rules do no I/O
+name = the gateway's privacy rules and the detectors do no I/O
 type = forbidden
 source_modules =
     app.ai.gateway.tokenizer
@@ -58,6 +60,10 @@ source_modules =
     app.ai.gateway.dlp
     app.ai.gateway.policy
     app.ai.gateway.grounding
+    app.ai.insights.facts
+    app.ai.insights.detectors
+    app.ai.insights.brief
+    app.ai.insights.render
 forbidden_modules =
     app.models
     app.core
