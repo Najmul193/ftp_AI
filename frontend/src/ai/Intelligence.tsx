@@ -8,6 +8,7 @@ import {
 } from "./api";
 import BriefCard from "./Brief";
 import InsightFeed from "./Insights";
+import PinnedAnswers from "./Pins";
 
 const hint: React.CSSProperties = {
   fontSize: "var(--fs-xs)", color: "var(--text-muted)", margin: "4px 0 0", lineHeight: 1.45,
@@ -104,6 +105,7 @@ export default function Intelligence() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <BriefCard />
+      <PinnedAnswers />
       <InsightFeed focus={focus} />
 
       <h2 style={{ margin: "10px 0 0", fontSize: "var(--fs-md)", fontWeight: 650,

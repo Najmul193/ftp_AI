@@ -22,7 +22,7 @@ from app.ai.config import ai_settings
 from app.ai.market import catalog, paste, sources
 from app.ai.market.news_tags import tag
 from app.ai.market.tenor import curve_rate, infer_tenor_days
-from app.ai.models import Brief, Insight, JobRun, MarketNews, MarketObservation, MarketSeries
+from app.ai.models import Brief, Conversation, Insight, JobRun, MarketNews, MarketObservation, MarketSeries
 from app.domain.errors import DomainError
 from app.models import AggDailyProduct, Product
 from app.repositories.rates import RateBook
@@ -198,13 +198,16 @@ def prune(db: Session) -> dict:
     i = gone(delete(Insight).where(Insight.status == "resolved",
                                    Insight.resolved_at < now - timedelta(days=180)))
     b = gone(delete(Brief).where(Brief.created_at < now - timedelta(days=90)))
+    # Threads older than the retention period go with their messages.
+    c = gone(delete(Conversation).where(Conversation.updated_at < now - timedelta(days=90)))
     # The egress log refuses deletes unless this transaction says it is the
     # retention job.
     db.execute(text("SET LOCAL ai.retention_purge = 'on'"))
     days = ai_settings().AI_REQUEST_RETENTION_DAYS
     r = gone(text("DELETE FROM ai_requests WHERE created_at < now() - make_interval(days => :d)")
              .bindparams(d=days))
-    return {"news": n, "job_runs": j, "insights": i, "briefs": b, "ai_requests": r}
+    return {"news": n, "job_runs": j, "insights": i, "briefs": b, "conversations": c,
+            "ai_requests": r}
 
 
 # --- treasury entries -------------------------------------------------------- #
@@ -239,7 +242,7 @@ def latest_observations(db: Session) -> dict[str, list[MarketObservation]]:
     return out
 
 
-def _curve(latest: dict[str, list[MarketObservation]]) -> list[dict]:
+def taka_curve(latest: dict[str, list[MarketObservation]]) -> list[dict]:
     """The taka curve: money market for the short end, government paper beyond."""
     order = [("BB_CALL_ON", "BB_DOMMR_ON"), ("BB_DOMMR_1W", "BB_SN_7D"), ("BB_DOMMR_1M",),
              ("BB_TBILL_91",), ("BB_TBILL_182",), ("BB_TBILL_364",), ("BB_TBOND_2Y",),
@@ -277,7 +280,7 @@ def overview(db: Session, *, include_balances: bool) -> dict:
             "entered_by": cur.entered_by if cur else None,
             "source_ref": cur.source_ref if cur else None,
         })
-    curve = _curve(latest)
+    curve = taka_curve(latest)
     return {"series": series, "curve": curve,
             "benchmarks": benchmarks(db, curve, include_balances=include_balances)}
 

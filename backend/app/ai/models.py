@@ -245,3 +245,59 @@ class Brief(AiBase):
     unverified: Mapped[list | None] = mapped_column(JSONB)
     created_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Conversation(AiBase):
+    """An Ask FTP thread. Its vault is encrypted: the token map is as
+    sensitive as the names it stands for."""
+
+    __tablename__ = "ai_conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    vault_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Message(AiBase):
+    """One question and what came of it. The result is kept so the thread
+    reads back exactly as it was answered, even after the data moves on."""
+
+    __tablename__ = "ai_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_conversations.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lang: Mapped[str] = mapped_column(String(5))
+    question: Mapped[str] = mapped_column(Text)
+    masked_question: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(12))
+    plan: Mapped[dict | None] = mapped_column(JSONB)
+    where: Mapped[dict | None] = mapped_column(JSONB)
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    answer: Mapped[str | None] = mapped_column(Text)
+    grounded: Mapped[bool | None] = mapped_column(Boolean)
+    unverified: Mapped[list | None] = mapped_column(JSONB)
+    provider: Mapped[str | None] = mapped_column(String(200))
+    model: Mapped[str | None] = mapped_column(String(120))
+    request_ids: Mapped[list | None] = mapped_column(JSONB)
+
+
+class Pin(AiBase):
+    """An answer kept as a tile. It stores the plan, not the numbers: the
+    tile re-runs the query -- with no model involved -- every time it is
+    shown, so it follows every upload."""
+
+    __tablename__ = "ai_pins"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    question: Mapped[str] = mapped_column(Text)
+    plan: Mapped[dict] = mapped_column(JSONB)
+    where: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

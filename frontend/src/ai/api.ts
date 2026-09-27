@@ -251,3 +251,81 @@ export function prepareRateChange(a: RateDraftAction) {
   } catch { /* storage blocked: the form simply opens empty */ }
   location.hash = "#/rates";
 }
+
+// --- Ask FTP -------------------------------------------------------------------
+
+export interface ResultColumn {
+  key: string; label: string;
+  unit: "text" | "bdt" | "pct" | "pp" | "date" | "count" | "num" | "mixed" | "mixed_change";
+}
+
+export interface ChartSpec {
+  type: "bar" | "line"; x: string; horizontal?: boolean; stack?: boolean;
+  series: ResultColumn[];
+}
+
+export interface AskResult {
+  title: string; description: string; columns: ResultColumn[];
+  rows: Record<string, string | number | null>[];
+  total: Record<string, string | number | null> | null;
+  period: Record<string, string> | null; chart: ChartSpec | null; notes: string[];
+}
+
+export type AskEvent =
+  | { type: "start"; conversation_id: string; sent: string }
+  | { type: "status"; text: string }
+  | { type: "result"; result: AskResult; tool: string }
+  | { type: "answer"; text: string | null; grounded: boolean | null; unverified: string[];
+      provider?: string; model?: string; explain: boolean; sent: string; note?: string }
+  | { type: "clarify" | "refused"; text: string }
+  | { type: "error"; code: string; text: string }
+  | { type: "done"; message_id: number; pinnable: boolean };
+
+export interface StoredMessage {
+  id: number; created_at: string; question: string; status: string; lang: string;
+  result: AskResult | null; answer: string | null; grounded: boolean | null;
+  unverified: string[]; provider: string | null; model: string | null; pinnable: boolean;
+}
+
+export interface PinTile { id: number; title: string; question: string; result: AskResult | { error: string } }
+
+const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "/api/v1";
+
+export const askApi = {
+  /** POST a question and hand each streamed event to `on` as it arrives. */
+  ask: async (body: { question: string; conversation_id?: string | null; lang: "en" | "bn" },
+              on: (e: AskEvent) => void, signal?: AbortSignal) => {
+    const token = localStorage.getItem("ftp_token");
+    const res = await fetch(`${API_BASE}/ai/ask`, {
+      method: "POST", signal, body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!res.ok || !res.body) {
+      const t = await res.text().catch(() => "");
+      let msg = res.statusText;
+      try { const d = JSON.parse(t).detail; msg = typeof d === "string" ? d : d?.message ?? msg; } catch { /* not JSON */ }
+      throw new ApiError(res.status, msg);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) on(JSON.parse(line) as AskEvent);
+      }
+    }
+  },
+  suggestions: () => request<{ items: string[] }>("/ai/ask/suggestions"),
+  conversations: () => request<{ items: { id: string; title: string; updated_at: string }[] }>("/ai/conversations"),
+  conversation: (id: string) => request<{ id: string; title: string; messages: StoredMessage[] }>(`/ai/conversations/${id}`),
+  deleteConversation: (id: string) => request<void>(`/ai/conversations/${id}`, { method: "DELETE" }),
+  pins: () => request<{ items: PinTile[] }>("/ai/pins"),
+  pin: (message_id: number) => request<{ id: number; title: string }>("/ai/pins", { method: "POST", ...json({ message_id }) }),
+  unpin: (id: number) => request<void>(`/ai/pins/${id}`, { method: "DELETE" }),
+};

@@ -18,6 +18,7 @@ import Upload from "./views/Upload";
 import AiAdmin from "./ai/AiAdmin";
 import Intelligence from "./ai/Intelligence";
 import Bell from "./ai/Bell";
+import AskLauncher from "./ai/Ask";
 
 //: Basic overview is first and is where a session lands after sign-in.
 //: `currentView` defaults to the same id, so the landing page and the first
@@ -189,6 +190,7 @@ function Shell() {
                 </span>
               )}
               <IconButton icon="refresh" label="Refresh now" onClick={refreshData} />
+              <AskLauncher />
               <Bell />
               {ai?.enabled && !narrow && (
                 <a href={ai.can_admin ? "#/ai" : undefined} title={ai.provider

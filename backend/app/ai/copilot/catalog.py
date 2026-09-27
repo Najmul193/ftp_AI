@@ -1,0 +1,316 @@
+"""What Ask FTP can do: metrics, periods, dimensions and tools, and the plan.
+
+A question becomes a *plan* -- a small JSON object naming one read-only tool
+and its arguments -- written by the model from the masked question alone. The
+model never sees data while planning and never writes SQL: it picks from this
+catalogue, `parse_plan` checks every field against it, and the server runs
+the plan in the asker's own scope. What the model cannot express here, the
+copilot cannot do.
+
+PURE: no I/O.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+
+
+@dataclass(frozen=True)
+class Metric:
+    label: str
+    unit: str            # bdt | pct
+    #: flow: summed over the period; stock: average daily balance; rate: annualised %.
+    kind: str
+    help: str
+
+
+METRICS: dict[str, Metric] = {
+    "net_ftp_profit": Metric("Net FTP profit", "bdt", "flow",
+                             "FTP profit of loans and deposits together over the period"),
+    "lending_ftp_profit": Metric("Lending FTP profit", "bdt", "flow", "FTP profit from loans"),
+    "deposit_ftp_profit": Metric("Deposit FTP profit", "bdt", "flow", "FTP profit from deposits"),
+    "deposits": Metric("Deposits", "bdt", "stock", "average daily deposit balance"),
+    "advances": Metric("Advances", "bdt", "stock", "average daily loan balance"),
+    "cost_of_deposits": Metric("Cost of deposits", "pct", "rate",
+                               "interest paid on deposits, % a year"),
+    "yield_on_advances": Metric("Yield on advances", "pct", "rate",
+                                "interest earned on loans, % a year"),
+    "nim": Metric("Net interest margin", "pct", "rate",
+                  "interest earned minus paid, over loans, % a year"),
+    "spread": Metric("Gross spread", "pct", "rate", "yield on advances minus cost of deposits"),
+    "ftp_yield": Metric("FTP yield", "pct", "rate", "net FTP profit over all balances, % a year"),
+}
+
+DIMENSIONS = ("total", "branch", "product", "division", "district", "category")
+PERIODS = ("latest_day", "last_7_days", "last_30_days", "this_month", "last_month", "all", "custom")
+CHARTS = ("bar", "line", "none")
+TOOLS = ("compare", "trend", "why", "market", "benchmarks", "insights", "explain", "clarify")
+OPS = ("gt", "lt", "change_gt", "change_lt")
+SIDES = ("ASSET", "LIABILITY")
+CATEGORIES = ("URBAN", "SEMI_URBAN", "RURAL")
+MARKET_CODES = ("BB_POLICY", "BB_CALL_ON", "BB_DOMMR_1M", "BB_TBILL_91", "BB_TBILL_182",
+                "BB_TBILL_364", "BB_TBOND_2Y", "BB_TBOND_5Y", "BB_TBOND_10Y", "FX_USDBDT",
+                "US_FEDFUNDS", "US_UST_10Y", "BRENT")
+MAX_LIMIT = 100
+
+
+@dataclass(frozen=True)
+class Condition:
+    metric: str
+    op: str
+    #: Natural units: percentage points for a rate (25 bp = 0.25), taka for money.
+    value: Decimal
+
+
+@dataclass(frozen=True)
+class Plan:
+    tool: str
+    metrics: tuple[str, ...] = ("net_ftp_profit",)
+    by: str = "total"
+    period: str = "last_7_days"
+    date_from: date | None = None
+    date_to: date | None = None
+    compare: bool = False
+    #: Filters as the model wrote them: vault tokens (BR_K7Q), product names.
+    division: str | None = None
+    district: str | None = None
+    branches: tuple[str, ...] = ()
+    products: tuple[str, ...] = ()
+    side: str | None = None
+    category: str | None = None
+    where: tuple[Condition, ...] = ()
+    sort: str | None = None            # a metric, or "change:<metric>"
+    order: str = "desc"
+    limit: int = 25
+    chart: str = "bar"
+    codes: tuple[str, ...] = ()
+    title: str = ""
+    #: For clarify: the question to put back to the person.
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        d = {k: v for k, v in self.__dict__.items()}
+        d["date_from"] = self.date_from.isoformat() if self.date_from else None
+        d["date_to"] = self.date_to.isoformat() if self.date_to else None
+        d["where"] = [{"metric": c.metric, "op": c.op, "value": str(c.value)} for c in self.where]
+        for k in ("metrics", "branches", "products", "codes"):
+            d[k] = list(d[k])
+        return d
+
+
+class PlanError(ValueError):
+    pass
+
+
+def _str(v, max_len: int = 120) -> str | None:
+    if v is None or v == "":
+        return None
+    if not isinstance(v, (str, int)):
+        raise PlanError(f"expected text, got {type(v).__name__}")
+    return str(v).strip()[:max_len] or None
+
+
+def _list(v, max_len: int = 20) -> tuple[str, ...]:
+    if v is None:
+        return ()
+    if isinstance(v, (str, int)):
+        v = [v]
+    if not isinstance(v, list):
+        raise PlanError("expected a list")
+    return tuple(s for x in v[:max_len] if (s := _str(x)))
+
+
+def _date(v) -> date | None:
+    s = _str(v, 10)
+    if s is None:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError as exc:
+        raise PlanError(f"bad date {s!r}") from exc
+
+
+def _dec(v) -> Decimal:
+    try:
+        return Decimal(str(v).replace(",", "").strip())
+    except (InvalidOperation, AttributeError) as exc:
+        raise PlanError(f"bad number {v!r}") from exc
+
+
+def parse_plan(raw: str | dict) -> Plan:
+    """A plan from the model's JSON, checked field by field against the catalogue."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        # Some models wrap JSON in a code fence despite being asked not to.
+        if text.startswith("```"):
+            text = text.strip("`").removeprefix("json").strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end < start:
+            raise PlanError("no JSON object in the reply")
+        try:
+            raw = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as exc:
+            raise PlanError(f"the reply is not valid JSON: {exc.msg}") from exc
+    if not isinstance(raw, dict):
+        raise PlanError("the plan is not an object")
+    d = raw
+    tool = _str(d.get("tool"), 20)
+    if tool not in TOOLS:
+        raise PlanError(f"unknown tool {tool!r}")
+    if tool in ("clarify", "explain"):
+        return Plan(tool=tool, message=_str(d.get("message"), 400) or "", title=_str(d.get("title")) or "")
+
+    metrics = tuple(m for m in _list(d.get("metrics")) if m in METRICS) or ("net_ftp_profit",)
+    by = _str(d.get("by"), 20) or ("total" if tool != "why" else "product")
+    if by not in DIMENSIONS:
+        raise PlanError(f"unknown dimension {by!r}")
+    if tool == "why" and by == "total":
+        by = "product"
+    period = _str(d.get("period"), 20) or "last_7_days"
+    if period not in PERIODS:
+        raise PlanError(f"unknown period {period!r}")
+    date_from, date_to = _date(d.get("date_from")), _date(d.get("date_to"))
+    if period == "custom":
+        if not date_from or not date_to or date_from > date_to:
+            raise PlanError("a custom period needs date_from <= date_to")
+    side = _str(d.get("side"), 10)
+    side = side.upper() if side else None
+    if side is not None and side not in SIDES:
+        raise PlanError(f"unknown side {side!r}")
+    cat = _str(d.get("category"), 20)
+    cat = cat.upper().replace(" ", "_").replace("-", "_") if cat else None
+    if cat is not None and cat not in CATEGORIES:
+        raise PlanError(f"unknown category {cat!r}")
+
+    where = []
+    for c in (d.get("where") or [])[:4]:
+        if not isinstance(c, dict):
+            raise PlanError("a condition must be an object")
+        m, op = _str(c.get("metric"), 40), _str(c.get("op"), 12)
+        if m not in METRICS or op not in OPS:
+            raise PlanError(f"bad condition {c!r}")
+        value = _dec(c["value_bp"]) / 100 if c.get("value_bp") is not None else _dec(c.get("value"))
+        where.append(Condition(m, op, value))
+        if m not in metrics:
+            metrics = metrics + (m,)
+    compare = bool(d.get("compare")) or any(c.op.startswith("change") for c in where) or tool == "why"
+
+    sort = _str(d.get("sort"), 50)
+    if sort is not None:
+        base = sort.removeprefix("change:")
+        if base not in METRICS:
+            sort = None
+        elif sort.startswith("change:"):
+            compare = True
+    order = "asc" if _str(d.get("order"), 5) == "asc" else "desc"
+    try:
+        limit = max(1, min(int(d.get("limit") or 25), MAX_LIMIT))
+    except (TypeError, ValueError):
+        limit = 25
+    chart = _str(d.get("chart"), 5) or ("line" if tool == "trend" else "bar")
+    if chart not in CHARTS:
+        chart = "bar"
+    codes = tuple(c.upper() for c in _list(d.get("codes")) if c.upper() in MARKET_CODES)
+
+    return Plan(tool=tool, metrics=metrics[:4], by=by, period=period, date_from=date_from,
+                date_to=date_to, compare=compare, division=_str(d.get("division")),
+                district=_str(d.get("district")), branches=_list(d.get("branches")),
+                products=_list(d.get("products")), side=side, category=cat, where=tuple(where),
+                sort=sort, order=order, limit=limit, chart=chart, codes=codes,
+                title=_str(d.get("title"), 90) or "")
+
+
+def window(p: Plan, latest: date, earliest: date) -> tuple[date, date]:
+    """The plan's period as dates, relative to the latest business date."""
+    if p.period == "latest_day":
+        return latest, latest
+    if p.period == "last_7_days":
+        return max(earliest, latest - timedelta(days=6)), latest
+    if p.period == "last_30_days":
+        return max(earliest, latest - timedelta(days=29)), latest
+    if p.period == "this_month":
+        return max(earliest, latest.replace(day=1)), latest
+    if p.period == "last_month":
+        end = latest.replace(day=1) - timedelta(days=1)
+        return max(earliest, end.replace(day=1)), end
+    if p.period == "custom" and p.date_from and p.date_to:
+        return max(earliest, p.date_from), min(latest, p.date_to)
+    return earliest, latest
+
+
+def prior(start: date, end: date) -> tuple[date, date]:
+    """The window of the same length immediately before."""
+    n = (end - start).days + 1
+    return start - timedelta(days=n), start - timedelta(days=1)
+
+
+def suggestions(scope: str) -> list[str]:
+    """Questions worth asking first, for the asker's level."""
+    common = ["Which 5 branches made the most FTP profit last week?",
+              "Why did FTP profit change this week?",
+              "Which products have the lowest FTP yield this month?",
+              "How has net interest margin moved over the last 30 days?",
+              "Where are call money and T-bill yields today?"]
+    if scope == "HO":
+        return ["Which benchmarks are furthest from the market?",
+                "Which divisions' cost of deposits rose this month?"] + common
+    if scope == "DIVISION":
+        return ["Branches in my division where cost of deposits rose this month",
+                "Rank my branches by FTP yield last week"] + common
+    return ["How did my FTP profit change week on week?",
+            "What is my cost of deposits and how has it moved?"] + common[3:]
+
+
+# --- the planner's instructions ---------------------------------------------- #
+
+def planner_system() -> str:
+    metrics = "\n".join(f"  {k}: {m.label} ({m.help})" for k, m in METRICS.items())
+    return f"""You turn a banker's question into ONE query plan for the FTP (funds transfer pricing) platform of a Bangladeshi bank. You never see data; you only choose what to run.
+
+Reply with a single JSON object, no prose. Fields:
+  tool: one of
+    "compare"    metrics for the whole book or broken down by a dimension, optionally against the previous period of equal length
+    "trend"      metrics day by day over the period
+    "why"        why net FTP profit changed: split into volume (balances) and rate (spreads), by a dimension
+    "market"     market rates and prices (codes below)
+    "benchmarks" the bank's FTP benchmark rates against the market curve, product by product
+    "insights"   the platform's current alerts and findings
+    "explain"    a concept question needing no data ("what is FTP?"); put nothing else
+    "clarify"    the question is ambiguous or impossible; put your question to the user in "message"
+  metrics: list of up to 4 of
+{metrics}
+  by: "total" | "branch" | "product" | "division" | "district" | "category"
+  period: "latest_day" | "last_7_days" | "last_30_days" | "this_month" | "last_month" | "all" | "custom" (then date_from, date_to as YYYY-MM-DD)
+  compare: true to add the previous period of the same length and the change
+  division, district: a token like DIV_4TA / DIST_X2N exactly as written in the question
+  branches: list of branch tokens like BR_K7Q exactly as written in the question
+  products: list of product names exactly as written, e.g. ["SAVINGS ACCOUNT - STANDARD"]
+  side: "ASSET" (loans) | "LIABILITY" (deposits)
+  category: "URBAN" | "SEMI_URBAN" | "RURAL"
+  where: list of {{"metric": ..., "op": "gt"|"lt"|"change_gt"|"change_lt", "value": number}}; rates in percentage points (or "value_bp" in basis points), money in taka
+  sort: a metric, or "change:<metric>"; order: "desc" | "asc"; limit: 1-100
+  chart: "bar" | "line" | "none"
+  codes (market only): any of {", ".join(MARKET_CODES)}
+  title: a short title for the answer, in the user's language
+
+Rules:
+- Tokens (BR_…, DIST_…, DIV_…) stand for real names you are not shown. Copy them exactly; never invent one.
+- "Rose/fell/changed/grew" needs compare: true, and "rose by more than X" is a change_gt condition.
+- "Top/best/worst N" is sort + order + limit. "Loans" means side ASSET, "deposits" side LIABILITY.
+- Periods are relative to the latest business date given below, not to today.
+- Prefer "compare" when unsure. Use "clarify" only when no sensible plan exists.
+
+Examples:
+Q: which 5 branches made the most FTP profit last week?
+{{"tool":"compare","metrics":["net_ftp_profit"],"by":"branch","period":"last_7_days","sort":"net_ftp_profit","order":"desc","limit":5,"chart":"bar","title":"Top 5 branches by FTP profit"}}
+Q: branches in DIV_4TA whose cost of deposits rose more than 25 bp this month
+{{"tool":"compare","metrics":["cost_of_deposits"],"by":"branch","division":"DIV_4TA","period":"this_month","compare":true,"where":[{{"metric":"cost_of_deposits","op":"change_gt","value_bp":25}}],"sort":"change:cost_of_deposits","order":"desc","chart":"bar","title":"Branches where deposits got dearer"}}
+Q: how has NIM moved over the last month?
+{{"tool":"trend","metrics":["nim"],"period":"last_30_days","chart":"line","title":"Net interest margin, daily"}}
+Q: why did profit fall this week?
+{{"tool":"why","by":"product","period":"last_7_days","chart":"bar","title":"What moved FTP profit"}}
+Q: where is the call money rate?
+{{"tool":"market","codes":["BB_CALL_ON","BB_DOMMR_1M"],"chart":"none","title":"Call money"}}"""

@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.ai import jobs
@@ -22,6 +23,8 @@ from app.ai.config import ai_settings
 from app.ai.market import catalog, paste
 from app.ai.market import service as market
 from app.ai.context.entities import user_vault
+from app.ai.copilot import chat
+from app.ai.copilot.catalog import suggestions
 from app.ai.context.fact_sheet import fingerprint as data_fingerprint
 from app.ai.context.fact_sheet import names as org_names
 from app.ai.insights import engine
@@ -33,7 +36,7 @@ from app.ai.gateway.gateway import (
 from app.ai.gateway.policy import ALLOWED, HARD_DROP, PolicyViolation
 from app.ai.models import AiProvider
 from app.ai.presets import PRESETS, presets_public, validate_base_url
-from app.api.deps import CurrentUser, DbDep, get_active_user, require
+from app.api.deps import CurrentUser, DbDep, ScopeDep, get_active_user, require
 from app.core.config import settings as core
 from app.domain.types import ScopeLevel
 
@@ -549,3 +552,91 @@ def write_brief(body: BriefIn, db: DbDep, user: ActiveUser) -> dict:
     except (AiUnavailable, GatewayBlocked, GatewayError) as exc:
         raise _fail(exc) from exc
     return _brief_out(db, user, body.lang)
+
+
+# --- Ask FTP ---------------------------------------------------------------------- #
+
+_chat = [Depends(require("AI_CHAT")), Depends(require_ai_enabled)]
+
+
+def _asker(user: CurrentUser, scope) -> chat.Asker:
+    return chat.Asker(user.id, user.username, user.scope_level, user.scope_id, scope)
+
+
+class AskIn(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
+    conversation_id: str | None = Field(None, max_length=36)
+    lang: Literal["en", "bn"] = "en"
+
+
+@router.post("/ask", dependencies=_chat)
+def ask(body: AskIn, user: ActiveUser, scope: ScopeDep) -> StreamingResponse:
+    """Answer a question as a stream of JSON lines: progress, the result table
+    and chart as soon as the query has run, then the checked answer."""
+    import json as _json
+
+    def lines():
+        for ev in chat.ask(_asker(user, scope), body.question, body.conversation_id, body.lang):
+            yield _json.dumps(ev, default=str, ensure_ascii=False) + "\n"
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@router.get("/ask/suggestions", dependencies=_chat)
+def ask_suggestions(user: ActiveUser) -> dict:
+    return {"items": suggestions(user.scope_level.value)}
+
+
+@router.get("/conversations", dependencies=_chat)
+def list_conversations(db: DbDep, user: ActiveUser) -> dict:
+    return {"items": [{"id": c.id, "title": c.title, "updated_at": c.updated_at}
+                      for c in chat.conversations(db, user.id)]}
+
+
+@router.get("/conversations/{cid}", dependencies=_chat)
+def get_conversation(cid: str, db: DbDep, user: ActiveUser) -> dict:
+    t = chat.thread(db, user.id, cid)
+    if t is None:
+        raise HTTPException(404, "no such conversation")
+    c, msgs = t
+    return {"id": c.id, "title": c.title, "messages": [{
+        "id": m.id, "created_at": m.created_at, "question": m.question, "status": m.status,
+        "lang": m.lang, "result": m.result, "answer": m.answer, "grounded": m.grounded,
+        "unverified": m.unverified or [], "provider": m.provider, "model": m.model,
+        "pinnable": m.status == "ok" and bool(m.plan) and m.where is not None
+                    and (m.plan or {}).get("tool") in ("compare", "trend", "why", "market", "benchmarks"),
+    } for m in msgs]}
+
+
+@router.delete("/conversations/{cid}", status_code=204, dependencies=_chat)
+def delete_conversation(cid: str, db: DbDep, user: ActiveUser) -> None:
+    if not chat.delete_conversation(db, user.id, cid):
+        raise HTTPException(404, "no such conversation")
+
+
+class PinIn(BaseModel):
+    message_id: int
+    title: str | None = Field(None, max_length=200)
+
+
+@router.get("/pins", dependencies=_view)
+def list_pins(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """Every pin re-run now, so a tile always shows the latest data."""
+    a = _asker(user, scope)
+    return {"items": [{"id": p.id, "title": p.title, "question": p.question,
+                       "result": chat.run_pin(db, a, p)} for p in chat.pins(db, user.id)]}
+
+
+@router.post("/pins", status_code=201, dependencies=_chat)
+def create_pin(body: PinIn, db: DbDep, user: ActiveUser) -> dict:
+    try:
+        p = chat.pin(db, user.id, body.message_id, body.title)
+    except chat.PinError as exc:
+        raise HTTPException(422, {"code": "not_pinnable", "message": str(exc)}) from exc
+    return {"id": p.id, "title": p.title}
+
+
+@router.delete("/pins/{pid}", status_code=204, dependencies=_view)
+def delete_pin(pid: int, db: DbDep, user: ActiveUser) -> None:
+    if not chat.unpin(db, user.id, pid):
+        raise HTTPException(404, "no such pin")

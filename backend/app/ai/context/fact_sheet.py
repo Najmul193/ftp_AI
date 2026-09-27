@@ -28,7 +28,7 @@ from app.ai.market import service as market
 from app.ai.market.tenor import points_used
 from app.ai.models import MarketNews, MarketObservation
 from app.domain.scope import ScopeFilter
-from app.models import AggDailyBranch, Branch, Division, Product
+from app.models import AggDailyBranch, Branch, District, Division, Product
 from app.repositories.analytics import AnalyticsRepo
 from app.repositories.cache import data_version
 from app.repositories.dashboard import Filters
@@ -108,7 +108,7 @@ def market_points(db: Session, today: date) -> dict[str, MarketPoint]:
 
 def _benchmarks(db: Session, points: dict[str, MarketPoint]) -> list[BenchmarkGap]:
     latest = market.latest_observations(db)
-    curve = market._curve(latest)                                       # noqa: SLF001
+    curve = market.taka_curve(latest)
     as_of_at = {p["tenor_days"]: p["as_of"] for p in curve if p["tenor_days"]}
     rows = market.benchmarks(db, curve, include_balances=True)["items"]
     out = []
@@ -201,6 +201,7 @@ def names(db: Session) -> dict[str, str]:
              for b in db.scalars(select(Branch))}
     names.update({f"PRD:{p.product_code}": p.short_name for p in db.scalars(select(Product))})
     names.update({f"DIV:{d.id}": f"{d.name} division" for d in db.scalars(select(Division))})
+    names.update({f"DIST:{d.code}": f"{d.name} district" for d in db.scalars(select(District))})
     return names
 
 

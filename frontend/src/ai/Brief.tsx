@@ -15,7 +15,7 @@ const heading: React.CSSProperties = {
 
 /** The write-up is plain text with **bold** headings and "- " / "1. " lines:
  *  rendered as text, never as HTML, since it came from outside the bank. */
-function Narrative({ text }: { text: string }) {
+export function Narrative({ text }: { text: string }) {
   const bold = (s: string): ReactNode[] =>
     s.split(/(\*\*[^*]+\*\*)/).map((part, n) => part.startsWith("**") && part.endsWith("**")
       ? <b key={n} style={{ color: "var(--text-primary)" }}>{part.slice(2, -2)}</b>
