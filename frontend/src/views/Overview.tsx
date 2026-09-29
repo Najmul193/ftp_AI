@@ -8,8 +8,11 @@ import {
 import type { Col } from "../components/ui";
 import { compact, longDate, money, n, pct, shortDate, signed } from "../format";
 import { useApp, useAsync } from "../state";
+import { useWhy } from "../ai/why";
 
 export default function Overview() {
+  // "Why?" buttons exist only while the optional AI module is on.
+  const why = useWhy();
   const { filters, setFilters } = useApp();
   const t = useTokens();
 
@@ -174,14 +177,15 @@ export default function Overview() {
       <Grid cols="repeat(auto-fit, minmax(160px, 1fr))">
         <Stat label="Net FTP profit" value={money(s?.net_ftp_profit)}
               delta={d?.net_ftp_profit?.change} deltaPct={d?.net_ftp_profit?.change_pct}
-              spark={spark} hint={priorNote} />
+              spark={spark} hint={priorNote} why={why("net_ftp_profit")} />
         <Stat label="Asset FTP" value={money(s?.asset_ftp_profit)}
-              delta={d?.asset_ftp_profit?.change} deltaPct={d?.asset_ftp_profit?.change_pct} />
+              delta={d?.asset_ftp_profit?.change} deltaPct={d?.asset_ftp_profit?.change_pct}
+              why={why("asset_ftp_profit")} />
         <Stat label="Liability FTP" value={money(s?.liability_ftp_profit)}
               delta={d?.liability_ftp_profit?.change}
-              deltaPct={d?.liability_ftp_profit?.change_pct} />
+              deltaPct={d?.liability_ftp_profit?.change_pct} why={why("liability_ftp_profit")} />
         <Stat label="FTP / balance" value={pct(s?.ftp_over_balance_pct, 4)}
-              hint="annualised" />
+              hint="annualised" why={why("ftp_yield")} />
         <Stat label="Total balance" value={compact(s?.total_balance)}
               delta={d?.total_balance?.change ? compact(d.total_balance.change) : undefined}
               deltaPct={d?.total_balance?.change_pct} hint="balance-days" />

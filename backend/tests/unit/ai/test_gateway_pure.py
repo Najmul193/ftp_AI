@@ -263,3 +263,10 @@ def test_words_that_start_like_months_do_not_hide_numbers():
     # "market 8.63%" is not a date, and its number must still be checked.
     g = grounding.check("market 8.63%, marginal 9.1%, decent 7.7%", [Decimal("8.63")])
     assert g.checked == 3 and set(g.unverified) == {"9.1", "7.7"}
+
+
+def test_dates_written_with_typographic_hyphens_are_still_dates():
+    # gpt-oss writes "2026‑09‑23" with non-breaking hyphens; the 23 is a day.
+    g = grounding.check("The period covered is 2026‑09‑03 to 2026‑09‑23, and 03 Sep‑23 Sep 2026; NIM 8.89%.",
+                        [Decimal("8.89")])
+    assert g.ok, g.unverified

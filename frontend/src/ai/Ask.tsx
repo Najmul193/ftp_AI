@@ -1,15 +1,21 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/icons";
 import { Button, IconButton, MiniButton, Pill } from "../components/ui";
-import { useApp } from "../state";
-import { AskEvent, askApi, AskResult, StoredMessage } from "./api";
+import { shortDate } from "../format";
+import { currentView, useApp } from "../state";
+import { PAGE_LABELS, pageExtra } from "./pageContext";
+import { AskEvent, askApi, AskPreset, AskResult, StoredMessage } from "./api";
 import AnswerView from "./AnswerView";
 import { Narrative } from "./Brief";
 
-/** Open Ask FTP from anywhere, optionally with a question ready to send. */
-export function openAsk(question?: string) {
-  window.dispatchEvent(new CustomEvent("ftp:ask", { detail: { question } }));
+/** Open Ask FTP from anywhere, optionally with a question ready to send.
+ *  With a `preset` (a plan a page built, e.g. a "Why?" button) it is sent at
+ *  once and runs exactly as built, with no planning step. */
+export function openAsk(question?: string, preset?: AskPreset) {
+  window.dispatchEvent(new CustomEvent("ftp:ask", { detail: { question, preset } }));
 }
+
+interface Seed { question?: string; preset?: AskPreset }
 
 interface Turn {
   question: string;
@@ -30,7 +36,7 @@ const muted: React.CSSProperties = { fontSize: "var(--fs-sm)", color: "var(--tex
 export default function AskLauncher() {
   const { ai } = useApp();
   const [open, setOpen] = useState(false);
-  const [seed, setSeed] = useState<string | undefined>();
+  const [seed, setSeed] = useState<Seed | undefined>();
   const allowed = Boolean(ai?.enabled && ai.can_chat);
 
   useEffect(() => {
@@ -41,7 +47,7 @@ export default function AskLauncher() {
         setOpen((o) => !o);
       }
     };
-    const onAsk = (e: Event) => { setSeed((e as CustomEvent).detail?.question); setOpen(true); };
+    const onAsk = (e: Event) => { setSeed((e as CustomEvent<Seed>).detail); setOpen(true); };
     document.addEventListener("keydown", onKey);
     window.addEventListener("ftp:ask", onAsk);
     return () => { document.removeEventListener("keydown", onKey); window.removeEventListener("ftp:ask", onAsk); };
@@ -66,10 +72,43 @@ export default function AskLauncher() {
   );
 }
 
-function AskDrawer({ seed, onClose }: { seed?: string; onClose: () => void }) {
+/** The page the drawer was opened on, in words: what "this" means. */
+function useContextLine() {
+  const { filters, divisions, districts, branches, products } = useApp();
+  const page = currentView();
+  const extra = pageExtra();
+  const bits: string[] = [];
+  if (page === "coach" && extra.branchLabel) bits.push(extra.branchLabel);
+  const f = filters as Record<string, unknown>;
+  if (f.date_from && f.date_to) bits.push(`${shortDate(String(f.date_from))}–${shortDate(String(f.date_to))}`);
+  if (f.division_id) bits.push(`${divisions.find((d) => d.id === f.division_id)?.name ?? "one"} division`);
+  if (f.district_id) bits.push(`${districts.find((d) => d.id === f.district_id)?.name ?? "one"} district`);
+  const bids = (f.branch_id as number[] | undefined) ?? [];
+  if (bids.length) {
+    const names = bids.map((id) => branches.find((b) => b.id === id)?.branch_name ?? String(id));
+    bits.push(names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", "));
+  }
+  const pcs = (f.product_code as string[] | undefined) ?? [];
+  if (pcs.length) {
+    const names = pcs.map((c) => products.find((p) => p.product_code === c)?.short_name ?? c);
+    bits.push(names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", "));
+  }
+  if (f.side) bits.push(f.side === "ASSET" ? "loans" : "deposits");
+  if (f.branch_category) bits.push(String(f.branch_category).replace("_", "-").toLowerCase() + " branches");
+  return { page, label: PAGE_LABELS[page] ?? page, bits, filters: f, branch: extra.branch };
+}
+
+function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
+  const ctx = useContextLine();
+  const [useCtx, setUseCtx] = useState<boolean>(() => {
+    try { return localStorage.getItem("ftp_ask_ctx") !== "0"; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem("ftp_ask_ctx", useCtx ? "1" : "0"); } catch { /* private mode */ } },
+            [useCtx]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [conv, setConv] = useState<string | null>(null);
-  const [text, setText] = useState(seed ?? "");
+  const [text, setText] = useState(seed?.preset ? "" : seed?.question ?? "");
+  const seedSent = useRef(false);
   const [lang, setLang] = useState<"en" | "bn">(() =>
     (localStorage.getItem("ftp_ask_lang") as "en" | "bn") || "en");
   const [busy, setBusy] = useState(false);
@@ -81,7 +120,7 @@ function AskDrawer({ seed, onClose }: { seed?: string; onClose: () => void }) {
 
   useEffect(() => {
     input.current?.focus();
-    askApi.suggestions().then((r) => setSugg(r.items)).catch(() => {});
+    askApi.suggestions(currentView()).then((r) => setSugg(r.items)).catch(() => {});
     askApi.conversations().then((r) => setRecent(r.items.slice(0, 6))).catch(() => {});
     const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
@@ -101,14 +140,15 @@ function AskDrawer({ seed, onClose }: { seed?: string; onClose: () => void }) {
   const patch = (fn: (t: Turn) => Turn) =>
     setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
 
-  const send = async (q: string) => {
+  const send = async (q: string, preset?: AskPreset) => {
     q = q.trim();
     if (!q || busy) return;
     setText(""); setBusy(true);
     setTurns((ts) => [...ts, { question: q, status: "Sending" }]);
     abort.current = new AbortController();
     try {
-      await askApi.ask({ question: q, conversation_id: conv, lang }, (e) => {
+      const context = useCtx ? { page: ctx.page, filters: ctx.filters, branch: ctx.branch } : undefined;
+      await askApi.ask({ question: q, conversation_id: conv, lang, preset, context }, (e) => {
         switch (e.type) {
           case "start": setConv(e.conversation_id); patch((t) => ({ ...t, sent: e.sent })); break;
           case "status": patch((t) => ({ ...t, status: e.text })); break;
@@ -129,6 +169,21 @@ function AskDrawer({ seed, onClose }: { seed?: string; onClose: () => void }) {
       input.current?.focus();
     }
   };
+
+  // A "Why?" button's question goes straight out -- one tick later. In
+  // development React mounts, unmounts and remounts once; the unmount aborts
+  // any request in flight, so sending on the first mount lost the answer.
+  // The timer is cleared with that first mount and set again by the second.
+  useEffect(() => {
+    if (!seed?.preset || !seed.question) return;
+    const t = setTimeout(() => {
+      if (seedSent.current) return;
+      seedSent.current = true;
+      send(seed.question!, seed.preset);
+    }, 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = async (id: string) => {
     const c = await askApi.conversation(id);
@@ -185,6 +240,21 @@ function AskDrawer({ seed, onClose }: { seed?: string; onClose: () => void }) {
                                            disabled={busy}>New</MiniButton>}
           <IconButton icon="close" label="Close" onClick={onClose} />
         </header>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px",
+                      borderBottom: "1px solid var(--border)", fontSize: "var(--fs-sm)",
+                      color: useCtx ? "var(--text-secondary)" : "var(--text-muted)" }}>
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                title="Questions like “why is this low?” are read in the light of this page and its filters">
+            {useCtx
+              ? <>Asking about: <b style={{ color: "var(--text-primary)" }}>{ctx.label}</b>
+                  {ctx.bits.length > 0 && <> · {ctx.bits.join(" · ")}</>}</>
+              : <>Page context off: questions are answered for everything you can see</>}
+          </span>
+          <MiniButton active={useCtx} onClick={() => setUseCtx((v) => !v)}
+                      title="Use this page and its filters as the context of questions">
+            {useCtx ? "On" : "Off"}</MiniButton>
+        </div>
 
         <div ref={scroller} style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex",
                                      flexDirection: "column", gap: 16 }}>
@@ -245,6 +315,22 @@ function TurnView({ t, onPin }: { t: Turn; onPin: () => void }) {
             <div style={{ fontWeight: 650, color: "var(--text-primary)" }}>{t.result.title}</div>
             <div style={muted}>{t.result.description}</div>
           </div>)}
+        {t.result?.facts && t.result.facts.length > 0 && (
+          <div style={{ padding: "8px 10px", borderRadius: 8, background: "var(--surface-2)",
+                        border: "1px solid var(--border)" }}>
+            <div style={{ fontSize: "var(--fs-xs)", fontWeight: 700, letterSpacing: ".06em",
+                          textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 3 }}>
+              What the figures show</div>
+            {t.result.facts.map((f) => (
+              <div key={f} className="tnum" style={{ fontSize: "var(--fs-base)", color: "var(--text-primary)",
+                                                      lineHeight: 1.5 }}>{f}</div>))}
+          </div>)}
+        {a?.conflicts && a.conflicts.length > 0 && (
+          <p style={{ margin: 0, fontSize: "var(--fs-sm)", lineHeight: 1.5 }}>
+            <Pill tone="critical">Contradicts the figures</Pill>{" "}
+            The wording below says {a.conflicts.join(", ")} moved the other way from the data.
+            Rely on “What the figures show” and the table.
+          </p>)}
         {a?.text && <Narrative text={a.text} />}
         {t.result && <AnswerView r={t.result} />}
         {t.stop && (
@@ -260,10 +346,12 @@ function TurnView({ t, onPin }: { t: Turn; onPin: () => void }) {
         {t.done && (a || t.result) && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", ...muted }}>
             {a?.explain ? <Pill tone="neutral">General explanation, not from your data</Pill>
+              : a?.conflicts?.length ? null
               : a?.grounded ? <Pill tone="good">Numbers checked against the result</Pill>
               : a?.grounded === false
                 ? <Pill tone="warning">{`Not in the result: ${a.unverified.join(", ")}`}</Pill>
                 : null}
+            {a?.truncated && <Pill tone="warning">Cut short by the provider: ask again</Pill>}
             {a?.provider && <span>{a.provider} · {a.model}</span>}
             <span style={{ flex: 1 }} />
             {t.pinnable && (

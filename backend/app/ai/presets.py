@@ -31,7 +31,9 @@ class Preset:
 PRESETS: dict[str, Preset] = {p.brand: p for p in (
     Preset("gemini", "Google Gemini", "openai_compat",
            "https://generativelanguage.googleapis.com/v1beta/openai", True, True, False,
-           ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"),
+           # Google retires models for new keys; Connect falls back to the best
+           # model the key actually lists (see providers.base.best_model).
+           ("gemini-3.8-flash",),
            "https://aistudio.google.com/apikey",
            "Free tier through Google AI Studio. Google may use free-tier prompts to "
            "improve its products; enable billing for no-training terms."),

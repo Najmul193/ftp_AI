@@ -14,12 +14,14 @@ PURE: no I/O.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable
 
 from app.ai.copilot.catalog import METRICS, Plan
 from app.ai.gateway.generalize import crore, rate
+from app.ai.insights.detectors import taka
 from app.ai.insights.facts import fill
 
 #: Decimal division of balances yields long fractions; rates show at 4 places.
@@ -46,6 +48,9 @@ class Result:
     notes: list[str] = field(default_factory=list)
     #: A one-line summary for the whole selection (compare by a dimension).
     total: dict | None = None
+    #: What the figures show, in words written by code: shown above whatever a
+    #: model writes, so a reader sees the true direction first.
+    facts: list[str] = field(default_factory=list)
 
     def to_json(self, names: dict[str, str]) -> dict:
         def clean(r: dict) -> dict:
@@ -57,7 +62,8 @@ class Result:
             "total": clean(self.total) if self.total else None,
             "period": {k: (v.isoformat() if hasattr(v, "isoformat") else v)
                        for k, v in (self.period or {}).items()},
-            "chart": self.chart, "notes": self.notes,
+            "chart": self.chart, "notes": [fill_names(n, names) for n in self.notes],
+            "facts": self.facts,
         }
 
 
@@ -111,6 +117,37 @@ def passes(row: dict, conditions) -> bool:
         if c.op.endswith("lt") and not v < c.value:
             return False
     return True
+
+
+def change_facts(plan: Plan, rows: list[dict], max_rows: int = 6) -> list[str]:
+    """One plain sentence per row and measure: which way it moved, by how much.
+
+    Only for a comparison of a few rows -- a named branch or two, a handful of
+    products -- where the direction is the answer. Written by code, so it is
+    right even when a model's narration is not.
+    """
+    if not plan.compare or not rows or len(rows) > max_rows:
+        return []
+    out = []
+    for r in rows:
+        parts = []
+        for m in plan.metrics:
+            now, was, ch = r.get(m), r.get(f"{m}__prior"), r.get(f"{m}__change")
+            if now is None or was is None or ch is None:
+                continue
+            meta = METRICS[m]
+            if meta.unit == "pct":
+                b = int((Decimal(str(ch)) * 100).to_integral_value())
+                move = "unchanged" if b == 0 else f"{'up' if b > 0 else 'down'} {abs(b)} bp"
+                parts.append(f"{meta.label.lower()} {move} ({Decimal(str(was)):.2f}% → "
+                             f"{Decimal(str(now)):.2f}%)")
+            else:
+                c = Decimal(str(ch))
+                move = "unchanged" if c == 0 else f"{'up' if c > 0 else 'down'} {taka(abs(c))}"
+                parts.append(f"{meta.label.lower()} {move} ({taka(was)} → {taka(now)})")
+        if parts:
+            out.append(f"{r.get('label')}: " + "; ".join(parts))
+    return out
 
 
 def metric_columns(plan: Plan) -> list[Column]:
@@ -199,8 +236,67 @@ def masked_text(res: Result, resolve: Callable[[str, str], str], *, max_rows: in
         return f"- {label}: " + "; ".join(parts + texts)
 
     if res.total:
-        out.append("ALL SELECTED " + row_text(res.total)[2:])
+        # Said outright: a model read a two-branch total as one branch's
+        # earlier value.
+        # Said outright: a model read a two-branch total as one branch's earlier
+        # value, and a division total as the sum of the five rows listed.
+        out.append("TOTAL FOR EVERYTHING SELECTED (all matching rows, not only those listed "
+                   "below; a total, not an earlier value): " + row_text(res.total)[2:])
     out.append(f"ROWS ({len(res.rows)}{', first ' + str(max_rows) if len(res.rows) > max_rows else ''}):")
     out += [row_text(r) for r in res.rows[:max_rows]]
     out += [f"NOTE: {fill(n, resolve)}" for n in res.notes]
     return "\n".join(out)
+
+
+# --- does the wording say the figures moved the way they did? ------------------ #
+
+_DOWN = re.compile(r"\b(fell|fall|falls|falling|lost|lose|loses|losing|declin\w*|decreas\w*|"
+                   r"drop\w*|down|shr[ai]nk\w*|lower\w*|reduc\w*|weaken\w*)\b", re.I)
+_UP = re.compile(r"\b(rose|rise|rises|rising|grew|grow|grows|growing|growth|increas\w*|gain\w*|"
+                 r"up|higher|improv\w*|climb\w*|strengthen\w*)\b", re.I)
+_METRIC_WORDS: dict[str, re.Pattern] = {
+    "deposits": re.compile(r"\bdeposits?\b(?!\s+cost)", re.I),
+    "advances": re.compile(r"\b(advances|loans?|lending)\b", re.I),
+    "cost_of_deposits": re.compile(r"\bcost of deposits?|deposit cost", re.I),
+    "yield_on_advances": re.compile(r"\byield on (advances|loans)|loan yield", re.I),
+    "net_ftp_profit": re.compile(r"\b(ftp )?profit\b", re.I),
+    "nim": re.compile(r"\b(nim|net interest margin|margin)\b", re.I),
+    "ftp_yield": re.compile(r"\bftp yield\b", re.I),
+}
+_CLAUSE = re.compile(r"(?<=[.;\n])|\bwhile\b|\bwhereas\b|\bbut\b|,", re.I)
+
+
+def direction_conflicts(text: str, plan: Plan, rows: list[dict]) -> list[str]:
+    """Places where the wording moves a row's measure the other way from the
+    figures: "X lost deposits" when X's deposits rose.
+
+    A clause is judged only when it names exactly one row, one measure (or
+    inherits the sentence's) and one direction; anything less clear is left
+    alone. Grounding checks the numbers; this checks their direction.
+    """
+    if not plan.compare or not rows:
+        return []
+    labels = [(r["label"], r) for r in rows if r.get("label")]
+    out: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        sentence_metric = [m for m in plan.metrics if m in _METRIC_WORDS
+                           and _METRIC_WORDS[m].search(sentence)]
+        for clause in _CLAUSE.split(sentence):
+            if not clause or not clause.strip():
+                continue
+            named = [(lab, r) for lab, r in labels if lab.lower() in clause.lower()]
+            if len(named) != 1:
+                continue
+            metric = [m for m in plan.metrics if m in _METRIC_WORDS
+                      and _METRIC_WORDS[m].search(clause)] or sentence_metric
+            down, up = bool(_DOWN.search(clause)), bool(_UP.search(clause))
+            if len(metric) != 1 or down == up:
+                continue
+            ch = named[0][1].get(f"{metric[0]}__change")
+            if ch is None or Decimal(str(ch)) == 0:
+                continue
+            if (Decimal(str(ch)) > 0) == down:
+                what = f"{named[0][0]} {METRICS[metric[0]].label.lower()}"
+                if what not in out:
+                    out.append(what)
+    return out

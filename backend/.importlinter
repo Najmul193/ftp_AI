@@ -48,6 +48,8 @@ source_modules =
     app.ai.insights
     app.ai.jobs
     app.ai.copilot
+    app.ai.coach
+    app.ai.uploads
 forbidden_modules =
     app.ai.providers
 allow_indirect_imports = True
@@ -67,6 +69,7 @@ source_modules =
     app.ai.insights.render
     app.ai.copilot.catalog
     app.ai.copilot.result
+    app.ai.coach.rules
 forbidden_modules =
     app.models
     app.core

@@ -3,6 +3,7 @@ import { api, Batch, DeletionImpact, Probe, UploadResult } from "../api";
 import { Button, Card, Empty, Grid, MiniButton, Pill, Stat, Table } from "../components/ui";
 import type { ExceptionRow } from "../api";
 import { longDate, money } from "../format";
+import UploadCheck from "../ai/UploadCheck";
 import { useApp, useAsync } from "../state";
 
 type Stage = "idle" | "probing" | "probed" | "uploading" | "done" | "error";
@@ -357,6 +358,9 @@ export default function Upload() {
                 </div>
               </div>
             )}
+
+            {/* The optional AI module's plain-language check; renders nothing when it is off. */}
+            <UploadCheck batchRef={result.batch_ref} onDelete={askDelete} />
 
             <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
               <Button variant="primary" onClick={() => { location.hash = "#/overview"; }}>

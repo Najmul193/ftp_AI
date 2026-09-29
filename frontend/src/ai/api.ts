@@ -51,6 +51,8 @@ export interface AiSettings {
 export interface ProbeResult {
   ok: boolean; models: string[]; reply: string | null;
   error_code: string | null; error: string | null; latency_ms: number | null;
+  /** The model actually tested, when the one asked for is no longer offered. */
+  model?: string | null;
 }
 
 export interface TryResult {
@@ -280,6 +282,8 @@ export interface AskResult {
   rows: Record<string, string | number | null>[];
   total: Record<string, string | number | null> | null;
   period: Record<string, string> | null; chart: ChartSpec | null; notes: string[];
+  /** Which way each row moved, in words written by code (not by the model). */
+  facts?: string[];
 }
 
 export type AskEvent =
@@ -287,7 +291,10 @@ export type AskEvent =
   | { type: "status"; text: string }
   | { type: "result"; result: AskResult; tool: string }
   | { type: "answer"; text: string | null; grounded: boolean | null; unverified: string[];
-      provider?: string; model?: string; explain: boolean; sent: string; note?: string }
+      provider?: string; model?: string; explain: boolean; sent: string; note?: string;
+      truncated?: boolean;
+      /** Where the wording moves a figure the opposite way from the data. */
+      conflicts?: string[] }
   | { type: "clarify" | "refused"; text: string }
   | { type: "error"; code: string; text: string }
   | { type: "done"; message_id: number; pinnable: boolean };
@@ -302,9 +309,16 @@ export interface PinTile { id: number; title: string; question: string; result: 
 
 const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "/api/v1";
 
+/** The page a question is asked on, what it is filtered to, and (coach) its branch. */
+export interface AskContext { page: string; filters: Record<string, unknown>; branch?: string }
+
+/** A plan built by a page (a "Why?" button), with the page's filters. */
+export interface AskPreset { plan: Record<string, unknown>; filters?: Record<string, unknown> }
+
 export const askApi = {
   /** POST a question and hand each streamed event to `on` as it arrives. */
-  ask: async (body: { question: string; conversation_id?: string | null; lang: "en" | "bn" },
+  ask: async (body: { question: string; conversation_id?: string | null; lang: "en" | "bn";
+                      preset?: AskPreset; context?: AskContext },
               on: (e: AskEvent) => void, signal?: AbortSignal) => {
     const token = localStorage.getItem("ftp_token");
     const res = await fetch(`${API_BASE}/ai/ask`, {
@@ -332,11 +346,59 @@ export const askApi = {
       }
     }
   },
-  suggestions: () => request<{ items: string[] }>("/ai/ask/suggestions"),
+  suggestions: (page?: string) =>
+    request<{ items: string[] }>(`/ai/ask/suggestions${page ? `?page=${encodeURIComponent(page)}` : ""}`),
   conversations: () => request<{ items: { id: string; title: string; updated_at: string }[] }>("/ai/conversations"),
   conversation: (id: string) => request<{ id: string; title: string; messages: StoredMessage[] }>(`/ai/conversations/${id}`),
   deleteConversation: (id: string) => request<void>(`/ai/conversations/${id}`, { method: "DELETE" }),
   pins: () => request<{ items: PinTile[] }>("/ai/pins"),
   pin: (message_id: number) => request<{ id: number; title: string }>("/ai/pins", { method: "POST", ...json({ message_id }) }),
   unpin: (id: number) => request<void>(`/ai/pins/${id}`, { method: "DELETE" }),
+};
+
+// --- Branch coach and upload check --------------------------------------------
+
+export interface CoachMetric {
+  key: string; label: string; unit: "bdt" | "pct" | "share"; higher_is_better: boolean;
+  value: number | null; before: number | null; district_median: number | null;
+  bank_median: number | null; district_rank: [number, number] | null;
+  bank_rank: [number, number] | null; better: boolean | null;
+}
+
+export interface CoachView {
+  branch: { code: string; name: string; district: string | null };
+  peers: { scope: "district" | "division"; name: string; count: number };
+  period: { start: string; end: string; prior_start: string; prior_end: string };
+  rank: { profit: [number, number] | null; profit_before: number | null; yield: [number, number] | null };
+  metrics: CoachMetric[];
+  actions: { key: string; title: string; body: string; money: number | null; basis: string; metric: string }[];
+  strengths: string[];
+}
+
+export interface CoachNote {
+  text: string; grounded: boolean | null; unverified: string[];
+  provider: string; model: string; sent: string; truncated?: boolean;
+}
+
+export const coachApi = {
+  branches: () => request<{ items: { code: string; name: string; district: string }[] }>("/ai/coach/branches"),
+  get: (code: string) => request<CoachView>(`/ai/coach/${encodeURIComponent(code)}`),
+  note: (code: string, lang: "en" | "bn") =>
+    request<CoachNote>(`/ai/coach/${encodeURIComponent(code)}/note`, { method: "POST", ...json({ lang }) }),
+};
+
+export interface UploadReview {
+  batch_ref: string; status: string; headline: string; serious: number; warnings: number;
+  rules: { rule: string; severity: "REJECT" | "WARN" | "INFO"; findings: number; rows: number;
+           title: string; meaning: string; fix: string; link: { label: string; href: string } | null;
+           values: { value: string; count: number }[];
+           examples: { where: string; message: string }[] }[];
+  days: { date: string; compared_with: string | null; note: string | null;
+          findings: { severity: "serious" | "warning" | "info"; kind: string; branch: string | null;
+                      title: string; detail: string }[] }[];
+  screened_dates: number; more_dates: boolean;
+}
+
+export const uploadCheckApi = {
+  review: (batchRef: string) => request<UploadReview>(`/ai/uploads/${encodeURIComponent(batchRef)}/review`),
 };

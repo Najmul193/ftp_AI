@@ -323,7 +323,9 @@ function Connect({ presets, editable, onDone, onFail }: {
       const r = await aiApi.probe({ brand: preset.brand, base_url: baseUrl || undefined,
                                     api_key: key || undefined, model: model || undefined });
       setProbe(r);
-      if (r.ok && r.models.length && !r.models.includes(model)) {
+      if (r.ok && r.model) {
+        setModel(r.model);
+      } else if (r.ok && r.models.length && !r.models.includes(model)) {
         // Prefer a suggested model the provider actually offers.
         setModel(preset.suggested_models.find((m) => r.models.includes(m)) ?? r.models[0]);
       }
@@ -397,7 +399,7 @@ function Connect({ presets, editable, onDone, onFail }: {
             {probe && (probe.ok
               ? <span style={para}><Pill tone="good">Connected</Pill>{" "}
                   {probe.models.length} model{probe.models.length === 1 ? "" : "s"} available
-                  {probe.reply && <> · replied “{probe.reply}” in {probe.latency_ms} ms</>}</span>
+                  {probe.reply && <> · {probe.model ? <b>{probe.model}</b> : "model"} replied “{probe.reply}” in {probe.latency_ms} ms</>}</span>
               : <span style={para}><Pill tone="critical">Could not connect</Pill> {probe.error}</span>)}
           </div>
 

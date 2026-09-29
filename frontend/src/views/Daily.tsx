@@ -5,10 +5,13 @@ import { waterfallOption } from "../components/waterfall";
 import { Card, Empty, Grid, MiniButton, Pill, Stat, Table } from "../components/ui";
 import { compact, longDate, money, n, pct } from "../format";
 import { useApp, useAsync } from "../state";
+import { useWhy } from "../ai/why";
 
 /** The screen a bank runs on in the morning: what needs attention, where the
  *  margin went, and whether the ratios moved. */
 export default function Daily() {
+  // "Why?" buttons exist only while the optional AI module is on.
+  const why = useWhy();
   const { filters, setFilters, me } = useApp();
   const t = useTokens();
 
@@ -149,17 +152,18 @@ export default function Daily() {
       {/* --- the ratios a bank reports daily --- */}
       <Grid cols="repeat(auto-fit, minmax(160px, 1fr))">
         <Stat label="Yield on advances" value={pct(r?.yield_on_advances_pct, 2)}
-              hint="annualised" />
+              hint="annualised" why={why("yield_on_advances")} />
         <Stat label="Cost of deposits" value={pct(r?.cost_of_deposits_pct, 2)}
-              hint="annualised" />
+              hint="annualised" why={why("cost_of_deposits")} />
         <Stat label="Gross spread" value={pct(r?.gross_spread_pct, 2)}
-              hint="yield less cost" tone="good" />
+              hint="yield less cost" tone="good" why={why("spread")} />
         <Stat label="Net interest margin" value={pct(r?.nim_pct, 2)}
-              hint="NII over advances" />
+              hint="NII over advances" why={why("nim")} />
         <Stat label="CASA ratio" value={pct(r?.casa_ratio_pct, 1)}
-              hint="demand over total deposits"
+              hint="demand over total deposits" why={why("casa")}
               tone={n(r?.casa_ratio_pct) < 30 ? "bad" : "neutral"} />
         <Stat label="Credit-deposit ratio" value={pct(r?.credit_deposit_ratio_pct, 1)}
+              why={why("cd_ratio")}
               hint={n(r?.credit_deposit_ratio_pct) > 100
                 ? "advances exceed deposits" : "self-funded"}
               tone={n(r?.credit_deposit_ratio_pct) > 100 ? "bad" : "good"} />

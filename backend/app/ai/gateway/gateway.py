@@ -29,7 +29,7 @@ from app.ai.gateway import dlp, grounding
 from app.ai.gateway.policy import PolicyViolation, Tier, check_provider, payload_tier
 from app.ai.gateway.tokenizer import Vault
 from app.ai.models import AiProvider, AiRequest
-from app.ai.providers.base import ChatMessage, ProviderError
+from app.ai.providers.base import ChatMessage, ProviderError, best_model
 from app.ai.providers.registry import build
 from app.core.db import session_scope
 
@@ -77,6 +77,8 @@ class GatewayResult:
     model: str
     grounded: bool | None
     unverified: tuple[str, ...]
+    #: The provider stopped at its length limit: the text may end mid-sentence.
+    truncated: bool = False
 
 
 class AiUnavailable(Exception):
@@ -218,7 +220,8 @@ def call(db: Session, caller: Caller, req: GatewayRequest) -> GatewayResult:
     return GatewayResult(text=text, masked_text=out.text, request_id=rid, tier=tier.name,
                          provider=p.label, model=out.model,
                          grounded=None if g is None else g.ok,
-                         unverified=() if g is None else g.unverified)
+                         unverified=() if g is None else g.unverified,
+                         truncated=out.finish == "length")
 
 
 # --- connection tests -------------------------------------------------------- #
@@ -234,10 +237,13 @@ class ProbeResult:
     error_code: str | None
     error: str | None
     latency_ms: int | None
+    #: The model that was tested -- not the one asked for, when the provider
+    #: no longer offers that one.
+    model: str | None = None
 
 
 def probe(*, caller: Caller, brand: str, kind: str, base_url: str, api_key: str | None,
-          model: str | None) -> ProbeResult:
+          model: str | None, preferred: tuple[str, ...] = ()) -> ProbeResult:
     """Check a key before it is saved: list models, and ping one if named.
 
     The ping is a fixed public sentence, logged like any other egress.
@@ -253,10 +259,18 @@ def probe(*, caller: Caller, brand: str, kind: str, base_url: str, api_key: str 
             # when a model was named and answers.
             if exc.code == "auth" or not model:
                 raise
+        # Providers retire models; a suggested default the key no longer lists
+        # would fail the ping and make a good key look bad. Test one it offers.
+        if models and model not in models:
+            model = best_model(models, preferred) or model
+            client = build(brand=brand, kind=kind, base_url=base_url, api_key=api_key,
+                           model=model or "", timeout=min(ai_settings().AI_HTTP_TIMEOUT, 30))
         if not model:
             return ProbeResult(True, models, None, None, None, None)
-        return _ping(client, caller=caller, label=f"{brand} (probe)", provider_id=None,
-                     model=model, models=models)
+        res = _ping(client, caller=caller, label=f"{brand} (probe)", provider_id=None,
+                    model=model, models=models)
+        return ProbeResult(res.ok, res.models, res.reply, res.error_code, res.error,
+                           res.latency_ms, model)
     except ProviderError as exc:
         return ProbeResult(False, models, None, exc.code, exc.message, None)
 

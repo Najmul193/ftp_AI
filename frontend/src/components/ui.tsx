@@ -224,11 +224,13 @@ const FullscreenToggle = forwardRef<HTMLButtonElement, {
 // --------------------------------------------------------------------------
 
 export function Stat({
-  label, value, delta, deltaPct, hint, spark, tone = "neutral", invertDelta = false,
+  label, value, delta, deltaPct, hint, spark, tone = "neutral", invertDelta = false, why,
 }: {
   label: string; value: string; delta?: string | null; deltaPct?: string | null;
   hint?: string; spark?: number[]; tone?: "neutral" | "good" | "bad";
   invertDelta?: boolean;
+  /** Explain this figure (the optional AI module). No button when absent. */
+  why?: () => void;
 }) {
   const d = delta == null ? null : n(delta);
   const improving = d == null ? null : invertDelta ? d < 0 : d > 0;
@@ -242,10 +244,21 @@ export function Stat({
       boxShadow: "var(--shadow-sm)", display: "flex", flexDirection: "column", gap: 6,
       minWidth: 0,
     }}>
-      <span style={{
-        fontSize: "var(--fs-xs)", fontWeight: 600, letterSpacing: ".05em",
-        textTransform: "uppercase", color: "var(--text-secondary)",
-      }}>{label}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{
+          fontSize: "var(--fs-xs)", fontWeight: 600, letterSpacing: ".05em",
+          textTransform: "uppercase", color: "var(--text-secondary)", flex: 1, minWidth: 0,
+        }}>{label}</span>
+        {why && (
+          <button type="button" onClick={why} className="btn btn-ghost"
+                  aria-label={`Why? Explain ${label}`} title="Why did this move?"
+                  style={{ display: "inline-grid", placeItems: "center", width: 24, height: 24,
+                           padding: 0, borderRadius: 6, color: "var(--accent)", flexShrink: 0,
+                           margin: "-4px -6px -4px 0" }}>
+            <Icon name="sparkle" size={14} />
+          </button>
+        )}
+      </span>
 
       {/* Proportional figures: tabular-nums reads loose at display size. */}
       <strong style={{

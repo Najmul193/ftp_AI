@@ -15,9 +15,12 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from pydantic import BaseModel, Field
 
 from app.ai import jobs
+from app.ai import uploads as upload_copilot
+from app.ai.coach import service as coach_service
 from app.ai import settings_service as svc
 from app.ai.config import ai_settings
 from app.ai.market import catalog, paste
@@ -182,7 +185,7 @@ def probe(body: ProbeIn, user: HoAdmin) -> dict:
     except ValueError as exc:
         raise HTTPException(422, {"code": "bad_url", "message": str(exc)}) from exc
     r = gw.probe(caller=_caller(user), brand=body.brand, kind=preset.kind, base_url=url,
-                 api_key=body.api_key, model=body.model)
+                 api_key=body.api_key, model=body.model, preferred=preset.suggested_models)
     return r.__dict__
 
 
@@ -572,10 +575,26 @@ def _asker(user: CurrentUser, scope) -> chat.Asker:
     return chat.Asker(user.id, user.username, user.scope_level, user.scope_id, scope)
 
 
+class PresetIn(BaseModel):
+    """A plan a page built, e.g. a "Why?" button, with the page's filters."""
+    plan: dict
+    filters: dict = Field(default_factory=dict)
+
+
+class ContextIn(BaseModel):
+    """The page the question was asked on, and what it is filtered to."""
+    page: str | None = Field(None, max_length=30)
+    filters: dict = Field(default_factory=dict)
+    #: Page-specific: the branch open in the coach.
+    branch: str | None = Field(None, max_length=10)
+
+
 class AskIn(BaseModel):
     question: str = Field(min_length=2, max_length=500)
     conversation_id: str | None = Field(None, max_length=36)
     lang: Literal["en", "bn"] = "en"
+    preset: PresetIn | None = None
+    context: ContextIn | None = None
 
 
 @router.post("/ask", dependencies=_chat)
@@ -585,15 +604,17 @@ def ask(body: AskIn, user: ActiveUser, scope: ScopeDep) -> StreamingResponse:
     import json as _json
 
     def lines():
-        for ev in chat.ask(_asker(user, scope), body.question, body.conversation_id, body.lang):
+        for ev in chat.ask(_asker(user, scope), body.question, body.conversation_id, body.lang,
+                           body.preset.model_dump() if body.preset else None,
+                           body.context.model_dump() if body.context else None):
             yield _json.dumps(ev, default=str, ensure_ascii=False) + "\n"
     return StreamingResponse(lines(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @router.get("/ask/suggestions", dependencies=_chat)
-def ask_suggestions(user: ActiveUser) -> dict:
-    return {"items": suggestions(user.scope_level.value)}
+def ask_suggestions(user: ActiveUser, page: str | None = Query(None, max_length=30)) -> dict:
+    return {"items": suggestions(user.scope_level.value, page)}
 
 
 @router.get("/conversations", dependencies=_chat)
@@ -649,3 +670,61 @@ def create_pin(body: PinIn, db: DbDep, user: ActiveUser) -> dict:
 def delete_pin(pid: int, db: DbDep, user: ActiveUser) -> None:
     if not chat.unpin(db, user.id, pid):
         raise HTTPException(404, "no such pin")
+
+
+# --- branch coach ------------------------------------------------------------------ #
+
+def _coachable_branch(db, scope, code: str):
+    from app.models import Branch
+    b = db.scalar(select(Branch).where(Branch.branch_code == code))
+    if b is None:
+        raise HTTPException(404, "no such branch")
+    if not scope.allows(b.id):
+        # Same answer the dashboards give for a branch outside your scope.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "that branch is outside your scope")
+    return b
+
+
+@router.get("/coach/branches", dependencies=_view)
+def coach_branches(db: DbDep, scope: ScopeDep) -> dict:
+    return {"items": coach_service.coachable(db, scope)}
+
+
+@router.get("/coach/{code}", dependencies=_view)
+def coach_branch(code: str, db: DbDep, scope: ScopeDep) -> dict:
+    _coachable_branch(db, scope, code)
+    try:
+        view, _, _ = coach_service.build(db, code)
+    except coach_service.CoachError as exc:
+        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
+    return view
+
+
+class NoteIn(BaseModel):
+    lang: Literal["en", "bn"] = "en"
+
+
+@router.post("/coach/{code}/note", dependencies=_view)
+def coach_note(code: str, body: NoteIn, db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """A coaching note in words, written by the active provider from the
+    coach's figures -- masked, and every number checked."""
+    _coachable_branch(db, scope, code)
+    try:
+        return coach_service.note(db, _caller(user), code, body.lang)
+    except coach_service.CoachError as exc:
+        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
+    except (AiUnavailable, GatewayBlocked, GatewayError) as exc:
+        raise _fail(exc) from exc
+
+
+# --- upload copilot ---------------------------------------------------------------- #
+
+@router.get("/uploads/{batch_ref}/review",
+            dependencies=[Depends(require("UPLOAD_VIEW")), Depends(require_ai_enabled)])
+def upload_review(batch_ref: str, db: DbDep) -> dict:
+    """Plain-language rejects and a day-on-day screen of one batch. No AI
+    provider is involved: nothing about an upload leaves the bank."""
+    r = upload_copilot.review(db, batch_ref)
+    if r is None:
+        raise HTTPException(404, f"no batch {batch_ref}")
+    return r

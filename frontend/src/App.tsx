@@ -19,6 +19,7 @@ import AiAdmin from "./ai/AiAdmin";
 import Intelligence from "./ai/Intelligence";
 import Bell from "./ai/Bell";
 import AskLauncher from "./ai/Ask";
+import Coach from "./ai/Coach";
 
 //: Basic overview is first and is where a session lands after sign-in.
 //: `currentView` defaults to the same id, so the landing page and the first
@@ -45,6 +46,9 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
   { id: "intel", label: "Intelligence", group: "Intelligence", icon: "globe",
     perm: "AI_VIEW", ai: true,
     desc: "This morning's brief, what needs a decision, and the market behind it." },
+  { id: "coach", label: "Branch coach", group: "Intelligence", icon: "target",
+    perm: "AI_VIEW", ai: true,
+    desc: "Where a branch stands among its peers, and the actions worth most this week." },
   { id: "upload", label: "Upload", group: "Operate", icon: "upload", perm: "UPLOAD_VIEW",
     desc: "Load bank data files and follow each batch through processing." },
   { id: "admin", label: "Master data", group: "Operate", icon: "database",
@@ -128,7 +132,8 @@ function Shell() {
                     daily: Daily, overview: Overview, analytics: Analytics,
                     leaders: Leaders, accounts: Accounts, upload: Upload,
                     admin: Admin, rates: Rates, activity: Activity, ai: AiAdmin,
-                    intel: ai?.enabled ? Intelligence : Daily }[view] ?? Daily;
+                    intel: ai?.enabled ? Intelligence : Daily,
+                    coach: ai?.enabled ? Coach : Daily }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 
   const activeFilterCount = (Object.entries(filters) as [string, unknown][]).reduce(

@@ -15,9 +15,12 @@ answer still stands.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import replace as dataclass_replace
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Iterator
 
 from sqlalchemy import delete, desc, func, select
@@ -28,14 +31,15 @@ from app.ai import settings_service as svc
 from app.ai.context.entities import org_entities
 from app.ai.context.fact_sheet import names as org_names
 from app.ai.copilot import tools
-from app.ai.copilot.catalog import Plan, PlanError, parse_plan, planner_system
-from app.ai.copilot.result import masked_text
+from app.ai.copilot.catalog import PAGES, Plan, PlanError, parse_plan, planner_system
+from app.ai.copilot.result import direction_conflicts, masked_text
 from app.ai.gateway import gateway as gw
 from app.ai.gateway.gateway import Caller, GatewayRequest, Segment, Turn
 from app.ai.gateway.grounding import differences_by_line, numbers_in
 from app.ai.gateway.policy import FieldPolicy
 from app.ai.gateway.tokenizer import Entity, Vault
 from app.ai.insights import engine
+from app.ai.insights.facts import fill
 from app.ai.models import Conversation, Message, Pin
 from app.core.db import session_scope
 from app.domain.scope import ScopeFilter, ScopeViolation
@@ -105,7 +109,7 @@ def _scope_words(db: Session, a: Asker, vault: Vault) -> str:
 
 
 def _context(db: Session, a: Asker, vault: Vault, policy: FieldPolicy,
-             history: list[Message]) -> str:
+             history: list[Message], page: PageContext | None = None, resolve=None) -> str:
     q = select(func.min(AggDailyBranch.business_date), func.max(AggDailyBranch.business_date))
     if not a.scope.unrestricted:
         q = q.where(AggDailyBranch.branch_id.in_(a.scope.branch_ids or [-1]))
@@ -113,6 +117,16 @@ def _context(db: Session, a: Asker, vault: Vault, policy: FieldPolicy,
     lines = [f"TODAY: {datetime.now(timezone.utc).date().isoformat()}",
              f"BANK DATA: {lo} to {hi} (latest business date {hi})" if hi else "BANK DATA: none yet",
              f"THE ASKER SEES: {_scope_words(db, a, vault)}. Queries are limited to this."]
+    if page is not None and page.page:
+        lines.append(f"THE ASKER IS ON THE PAGE: {PAGES[page.page][0]} -- it shows "
+                     f"{PAGES[page.page][1]}.")
+        filt = fill(page.describe(), resolve) if resolve else page.describe()
+        lines.append(f"THE PAGE IS FILTERED TO: {filt or 'nothing (the whole of what the asker sees)'}.")
+        if page.page == "coach" and page.where.branch_codes and resolve:
+            lines.append(f"THIS BRANCH (open on the page): {resolve('BR', page.where.branch_codes[0])}.")
+        lines.append("Words like 'this', 'here', 'these', 'this branch' mean what this page shows. "
+                     "The page's filters apply unless the question names something else, so do "
+                     "not repeat them in the plan.")
     if policy.action("product_name") == "pass":
         prods = [f'"{p.short_name}"' for p in db.scalars(select(Product).where(Product.is_active.is_(True))
                                                          .order_by(Product.side, Product.short_name))]
@@ -197,6 +211,10 @@ def _narrator_system(lang: str, explain: bool) -> str:
         "- Lead with the direct answer in one sentence, then at most three short sentences or "
         "'- ' bullets on what stands out. No preamble, no advice the result does not support.\n"
         "- If nothing matched, say what was checked and that nothing matched.\n"
+        "- The question may carry a premise (\"why did X lose deposits\"). If RESULT shows the "
+        "opposite, or does not show it, say so first, plainly, before anything else.\n"
+        "- Describe only what RESULT measures. If it measures something other than what was "
+        "asked, say what it shows instead.\n"
         f"- Under 120 words. Write in {LANGS[lang]}"
         + ("; keep tokens, product names and numbers exactly as given, in English digits."
            if lang == "bn" else "."))
@@ -222,12 +240,163 @@ def _gateway_error(exc: Exception) -> dict:
                "budget": "Today's AI budget has been used up."}.get(exc.code, exc.message)
         return {"type": "error", "code": f"blocked_{exc.code}", "text": why}
     if isinstance(exc, gw.GatewayError):
+        if exc.retryable:
+            return {"type": "error", "code": f"provider_{exc.code}",
+                    "text": "The AI provider is busy right now and did not answer, even after "
+                            "retrying. This usually clears within a minute: ask again. "
+                            f"(It said: {exc.message})"}
         return {"type": "error", "code": f"provider_{exc.code}",
                 "text": f"The AI provider did not answer: {exc.message}"}
     raise exc
 
 
-def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iterator[dict]:
+def ambiguous_names(question: str, vault: Vault) -> list[tuple[str, list[str]]]:
+    """Names in the question that belong to more than one branch (or
+    district), with no code alongside to say which: [(name, [displays])].
+
+    "Dhaka Main" is two branches. Masking would pick one silently; asking is
+    the only honest answer.
+    """
+    by_name: dict[str, dict[tuple[str, str], Entity]] = {}
+    for e in vault.entities():
+        for n in {e.display, *e.aliases}:
+            if n and len(n) >= 3 and not n.isdigit():
+                by_name.setdefault(n.lower(), {})[(e.kind, e.key)] = e
+    out = []
+    low = question.lower()
+    # Longest names first, each claiming its text: "Dhaka" inside "Dhaka Main"
+    # is part of the branch's name, not a mention of Dhaka district.
+    for name in sorted(by_name, key=len, reverse=True):
+        pat = re.compile(r"(?<![\w])" + re.escape(name) + r"(?![\w])")
+        if not pat.search(low):
+            continue
+        ents = by_name[name]
+        if len(ents) > 1 and not any(
+                re.search(r"(?<![\w])" + re.escape(e.key) + r"(?![\w])", question)
+                for e in ents.values()):
+            out.append((name, sorted(e.display for e in ents.values())))
+        low = pat.sub(lambda m: " " * len(m.group(0)), low)
+    return out
+
+
+@dataclass(frozen=True)
+class PageContext:
+    """The page a question was asked on and what it was filtered to."""
+    page: str | None
+    where: tools.Where
+    date_from: date | None = None
+    date_to: date | None = None
+
+    @property
+    def label(self) -> str:
+        return PAGES[self.page][0] if self.page in PAGES else ""
+
+    def describe(self) -> str:
+        """The filters in words, entities as placeholders."""
+        bits = [self.where.describe()] if self.where.describe() else []
+        if self.date_from and self.date_to:
+            bits.append(f"{self.date_from:%d %b}–{self.date_to:%d %b %Y}")
+        return ", ".join(bits)
+
+
+def _iso(v) -> date | None:
+    try:
+        return date.fromisoformat(str(v)) if v else None
+    except ValueError:
+        return None
+
+
+def page_context(db: Session, ctx: dict | None) -> PageContext | None:
+    if not ctx:
+        return None
+    page = ctx.get("page") if ctx.get("page") in PAGES else None
+    f = ctx.get("filters") or {}
+    w = where_from_filters(db, f)
+    code = ctx.get("branch")
+    if page == "coach" and code and db.scalar(select(Branch.id).where(Branch.branch_code == code)):
+        w = dataclass_replace(w, branch_codes=(str(code),), division_id=None, district_code=None,
+                              category=None)
+    df, dt = _iso(f.get("date_from")), _iso(f.get("date_to"))
+    return PageContext(page, w, df, dt) if (df and dt) else PageContext(page, w)
+
+
+def _peer_notes(db: Session, code: str, plan: Plan) -> list[str]:
+    """On the coach page, "compared with its peers" needs the peers: their
+    median and the branch's rank, from the coach. Rates only -- a median
+    amount would be an exact figure -- and the peer group as a placeholder."""
+    from app.ai.coach import service as coach_service
+    from app.ai.coach.rules import METRICS as COACH_METRICS
+    try:
+        view, c, _ = coach_service.build(db, code)
+    except coach_service.CoachError:
+        return []
+    b = db.scalar(select(Branch).where(Branch.branch_code == code))
+    if b is None:
+        return []
+    if c.peer_scope == "district":
+        d = db.get(District, b.district_id)
+        group = f"{{DIST:{d.code}}}" if d else "its district"
+    else:
+        group = f"{{DIV:{b.division_id}}}" if b.division_id else "its division"
+    wanted = [m for m in plan.metrics if m in COACH_METRICS] or \
+        ["cost_of_deposits", "yield_on_advances", "ftp_yield"]
+    out = []
+    for m in view["metrics"]:
+        if m["key"] not in wanted or m["unit"] != "pct" or m["district_median"] is None:
+            continue
+        rank = m["district_rank"]
+        out.append(f"Peers ({c.peer_count} branches of {group}): median {m['label'].lower()} "
+                   f"{Decimal(m['district_median']):.2f}%"
+                   + (f"; this branch ranks {rank[0]} of {rank[1]}" if rank else "")
+                   + (" (lower is better)" if not m["higher_is_better"] else "") + ".")
+    return out
+
+
+_PLACE = ("branch_codes", "division_id", "district_code", "category")
+_WHAT = ("product_codes", "side")
+
+
+def merge_where(asked: tools.Where, page: tools.Where) -> tuple[tools.Where, bool]:
+    """The question's own filters, with the page's filling what it left open.
+
+    By group, not field by field: a question that names a branch has chosen its
+    place, and the page's division must not narrow it to nothing.
+    """
+    used = False
+    out = asked
+    for group in (_PLACE, _WHAT):
+        if not any(getattr(asked, g) for g in group) and any(getattr(page, g) for g in group):
+            out = dataclass_replace(out, **{g: getattr(page, g) for g in group})
+            used = True
+    return out, used
+
+
+def where_from_filters(db: Session, f: dict) -> tools.Where:
+    """A page's filter bar (ids, as the dashboards send them) as a plan's filters."""
+    ids = [int(x) for x in (f.get("branch_id") or [])][:100]
+    codes = tuple(db.scalars(select(Branch.branch_code).where(Branch.id.in_(ids)))) if ids else ()
+    dist = db.scalar(select(District.code).where(District.id == int(f["district_id"]))) \
+        if f.get("district_id") else None
+    side = f.get("side") if f.get("side") in ("ASSET", "LIABILITY") else None
+    cat = f.get("branch_category") if f.get("branch_category") in ("URBAN", "SEMI_URBAN", "RURAL") \
+        else None
+    return tools.Where(codes, int(f["division_id"]) if f.get("division_id") else None, dist,
+                       tuple(str(p) for p in (f.get("product_code") or []))[:50], side, cat)
+
+
+def preset_plan(preset: dict) -> Plan:
+    """A plan a page built (a "Why?" button), with the page's dates if it has them."""
+    raw = dict(preset.get("plan") or {})
+    f = preset.get("filters") or {}
+    if f.get("date_from") and f.get("date_to"):
+        raw.update(period="custom", date_from=f["date_from"], date_to=f["date_to"])
+    return parse_plan(raw)
+
+
+def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
+        preset: dict | None = None, context: dict | None = None) -> Iterator[dict]:
+    """Answer a question. A `preset` -- a plan and filters built by a page's
+    "Why?" button -- skips the planning call: the question is already exact."""
     question = question.strip()
     with session_scope() as db:
         state = svc.state(db)
@@ -250,6 +419,7 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
         names = org_names(db)
         div_codes = {str(d.id): d.code for d in db.scalars(select(Division))}
         resolver = _resolver(vault, state.policy, names, div_codes)
+        doubtful = ambiguous_names(question, vault) if preset is None else []
         masked_q = vault.mask_text(question)
         msg = Message(conversation_id=conv.id, user_id=a.user_id, lang=lang, question=question,
                       masked_question=masked_q, status="error", request_ids=[])
@@ -261,12 +431,40 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
             db.add(msg)
             db.flush()
 
+        if doubtful:
+            name, options = doubtful[0]
+            msg.status = "clarify"
+            msg.answer = (f"There are {len(options)} with that name: {' and '.join(options)}. "
+                          f"Which one do you mean? Add the code, e.g. \"{options[-1]}\".")
+            finish()
+            yield {"type": "clarify", "text": msg.answer}
+            yield {"type": "done", "message_id": msg.id, "pinnable": False}
+            return
+
         # 1. Plan.
-        yield {"type": "status", "text": "Working out what to look up"}
-        context = _context(db, a, vault, state.policy, history)
-        turns = [Turn("user", [Segment("instruction", context), Segment("user", masked_q)])]
         plan: Plan | None = None
-        for attempt in range(2):
+        preset_where: tools.Where | None = None
+        if preset is not None:
+            try:
+                plan = preset_plan(preset)
+                preset_where = where_from_filters(db, preset.get("filters") or {})
+                # A "Why?" on cost of deposits means deposits, whatever the page
+                # filter says about side -- unless the page already narrowed it.
+                if plan.side and not preset_where.side:
+                    preset_where = dataclass_replace(preset_where, side=plan.side)
+            except (PlanError, ValueError, TypeError) as exc:
+                msg.answer = f"That question could not be built: {exc}."
+                finish()
+                yield {"type": "error", "code": "bad_preset", "text": msg.answer}
+                yield {"type": "done", "message_id": msg.id, "pinnable": False}
+                return
+        else:
+            yield {"type": "status", "text": "Working out what to look up"}
+        page = page_context(db, context)
+        planner_ctx = _context(db, a, vault, state.policy, history, page, resolver) \
+            if preset is None else ""
+        turns = [Turn("user", [Segment("instruction", planner_ctx), Segment("user", masked_q)])]
+        for attempt in range(0 if preset is not None else 2):
             try:
                 r = gw.call(db, a.caller, GatewayRequest(
                     purpose="ask_plan", system=planner_system(), turns=turns, vault=vault,
@@ -293,6 +491,8 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
             yield {"type": "error", "code": "no_plan", "text": msg.answer}
             yield {"type": "done", "message_id": msg.id, "pinnable": False}
             return
+        # The model titles its plan with tokens; the person reads names.
+        plan = dataclass_replace(plan, title=vault.rehydrate(plan.title))
         msg.plan = plan.to_dict()
 
         if plan.tool == "clarify":
@@ -306,9 +506,18 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
         # 2. Run it, in the asker's scope.
         res = None
         data_text = ""
+        page_note: str | None = None
         if plan.tool != "explain":
             try:
-                where = resolve(db, plan, vault)
+                where = preset_where if preset_where is not None else resolve(db, plan, vault)
+                if preset_where is None and page is not None and plan.tool in ("compare", "trend", "why"):
+                    where, used = merge_where(where, page.where)
+                    if page.date_from and page.date_to and not plan.period_set:
+                        plan = dataclass_replace(plan, period="custom", date_from=page.date_from,
+                                                 date_to=page.date_to)
+                        used = True
+                    if used:
+                        page_note = f"Using the filters set on the {page.label} page: {page.describe()}."
             except PlanError as exc:
                 msg.status, msg.answer = "refused", f"I could not match part of that: {exc}."
                 finish()
@@ -334,6 +543,11 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
                 yield {"type": "refused", "text": exc.message}
                 yield {"type": "done", "message_id": msg.id, "pinnable": False}
                 return
+            if page_note:
+                res.notes.insert(0, page_note)
+            if page is not None and page.page == "coach" and page.where.branch_codes \
+                    and plan.tool in ("compare", "trend"):
+                res.notes += _peer_notes(db, page.where.branch_codes[0], plan)
             msg.result = res.to_json(names)
             yield {"type": "result", "result": msg.result, "tool": plan.tool}
             data_text = masked_text(res, resolver)
@@ -345,6 +559,12 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
         if data_text:
             kind = "public" if plan.tool == "market" else "bank"
             segs.append(Segment(kind, f"RESULT:\n{data_text}"))
+        if not explain:
+            segs.append(Segment("instruction", "Before you answer, check every claim in the "
+                                               "question against RESULT. If RESULT contradicts a "
+                                               "claim or does not show it, begin with \"The "
+                                               "figures do not show that:\" and say what they "
+                                               "do show."))
         if lang == "bn":
             # Smaller models follow the last instruction they read, not one
             # at the end of a long system prompt.
@@ -359,11 +579,16 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
                 turns=[Turn("user", segs)], vault=vault, facts=facts, numeric_codes=codes,
                 max_tokens=500))
             msg.request_ids = [*(msg.request_ids or []), r.request_id]
-            msg.answer, msg.grounded, msg.unverified = r.text, r.grounded, list(r.unverified)
+            # Numbers can all be real and still be told the wrong way round.
+            conflicts = direction_conflicts(r.text, plan, res.rows) if res is not None else []
+            grounded = False if conflicts else r.grounded
+            msg.answer, msg.grounded = r.text, grounded
+            msg.unverified = list(r.unverified) + [f"direction: {c}" for c in conflicts]
             msg.provider, msg.model = r.provider, r.model
-            answer = {"type": "answer", "text": r.text, "grounded": r.grounded,
+            answer = {"type": "answer", "text": r.text, "grounded": grounded,
                       "unverified": list(r.unverified), "provider": r.provider, "model": r.model,
-                      "explain": explain, "sent": data_text}
+                      "explain": explain, "sent": data_text, "truncated": r.truncated,
+                      "conflicts": conflicts}
         except (gw.AiUnavailable, gw.GatewayBlocked, gw.GatewayError) as exc:
             # The table and chart stand without the words.
             ev = _gateway_error(exc)

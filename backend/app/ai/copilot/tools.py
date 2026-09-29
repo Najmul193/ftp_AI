@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.ai.context import fact_sheet as sheet
 from app.ai.copilot.catalog import METRICS, Plan, prior, window
 from app.ai.copilot.result import (
-    Column, Result, chart_for, compute, metric_columns, passes,
+    Column, Result, change_facts, chart_for, compute, metric_columns, passes,
 )
 from app.ai.insights import engine
 from app.ai.market import catalog as market_catalog
@@ -108,6 +108,10 @@ def _rollup(a: AnalyticsRepo, f: Filters, by: str) -> dict:
     return out
 
 
+#: Shared with the branch coach, which rolls every branch up the same way.
+rollup = _rollup
+
+
 def _labeller(db: Session, by: str, names: dict[str, str]):
     """key -> (display label, entity placeholder or None)."""
     if by == "branch":
@@ -166,6 +170,21 @@ def compare(db: Session, a: AnalyticsRepo, plan: Plan, where: Where, start: date
         ps, pe = prior(start, end)
         pf = where.filters(db, ps, pe)
         was, pdays = _rollup(a, pf, plan.by), _days(a, pf)
+        span = (end - start).days + 1
+        if not was and span >= 2:
+            # Nothing before the period (it starts where the data does): compare
+            # its second half with its first, as the profit bridge does, rather
+            # than answer "did it fall?" with no comparison at all.
+            half = span // 2
+            ps, pe = start, start + timedelta(days=half - 1)
+            start = start + timedelta(days=half)
+            f = where.filters(db, start, end)
+            now, days = _rollup(a, f, plan.by), _days(a, f)
+            pf = where.filters(db, ps, pe)
+            was, pdays = _rollup(a, pf, plan.by), _days(a, pf)
+            if was:
+                no_prior_note = ("There is no data before this period, so its second half is "
+                                 "compared with its first.")
         if not was:
             dropped = [c for c in plan.where if c.op.startswith("change")]
             plan = _no_compare(plan)
@@ -217,7 +236,7 @@ def compare(db: Session, a: AnalyticsRepo, plan: Plan, where: Where, start: date
         notes.append(f"Showing the first {plan.limit}.")
     return Result(title=plan.title or desc, description=desc, columns=cols, rows=rows,
                   period=_period(start, end, ps, pe), chart=chart_for(plan, cols, rows),
-                  notes=notes, total=total)
+                  notes=notes, total=total, facts=change_facts(plan, rows))
 
 
 def _no_compare(plan: Plan) -> Plan:
@@ -343,7 +362,13 @@ def benchmarks_tool(db: Session, plan: Plan) -> Result:
              "gap": Decimal(i["gap_bp"]) / 100 if i["gap_bp"] is not None else None,
              "balance": i["balance"], "monthly": i["monthly_impact"],
              "basis": "behavioural" if i["behavioural"] else None} for i in items]
-    rows.sort(key=lambda r: abs(r["gap"] or 0), reverse=True)
+    # Market-priced products first, by the size of their gap: those are the
+    # benchmarks ALCO can act on. Non-maturity deposits follow -- their gap is a
+    # deliberate behavioural pricing policy and would otherwise always lead.
+    rows.sort(key=lambda r: (r["basis"] == "behavioural", -abs(r["gap"] or 0)))
+    for r in rows:
+        if r["basis"] == "behavioural":
+            r["basis"] = "behavioural: priced by policy, not against the market"
     rows = rows[: plan.limit]
     cols = [Column("label", "Product", "text"), Column("benchmark", "FTP benchmark", "pct"),
             Column("market", "Market at its term", "pct"), Column("gap", "Gap", "pp"),
@@ -354,8 +379,9 @@ def benchmarks_tool(db: Session, plan: Plan) -> Result:
     return Result(title=plan.title or "Benchmarks against the market",
                   description="Each product's FTP benchmark against the taka curve at its term",
                   columns=cols, rows=rows, chart=chart,
-                  notes=["Non-maturity deposits use a one-year behavioural term; their gap is a "
-                         "pricing policy, not an error."])
+                  notes=["Products priced against the market come first, largest gap first. "
+                         "Non-maturity deposits (current and savings) follow: they use a one-year "
+                         "behavioural term and their gap is a pricing policy, not an error."])
 
 
 def insights_tool(db: Session, reader: engine.Reader, names: dict[str, str]) -> Result:

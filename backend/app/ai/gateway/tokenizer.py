@@ -94,6 +94,17 @@ class Vault:
         spellings.sort(key=lambda p: len(p[0]), reverse=True)
 
         out = text
+        # A name with its code beside it ("Dhaka Main 105", "Dhaka Main (105)")
+        # is that one branch -- names repeat, codes do not. Settled first, so
+        # the bare-name pass below cannot give it to a namesake.
+        for tok, e in self._by_token.items():
+            if not e.key.isdigit():
+                continue
+            for n in e.aliases:
+                if n and len(n) >= 3 and not n.isdigit():
+                    pat = re.compile(r"(?i)(?<![\w])" + re.escape(n) + r"\s*[,(-]?\s*"
+                                     + re.escape(e.key) + r"\)?(?![\w])")
+                    out = pat.sub(tok, out)
         for s, tok in spellings:
             if s.isdigit():
                 pat = re.compile(
@@ -123,6 +134,9 @@ class Vault:
             e = self._by_token.get(m.group(0))
             return e.display if e else m.group(0)
         return _TOKEN_RE.sub(swap, text)
+
+    def entities(self) -> list[Entity]:
+        return list(self._by_token.values())
 
     def entity(self, token: str) -> Entity | None:
         return self._by_token.get(token)

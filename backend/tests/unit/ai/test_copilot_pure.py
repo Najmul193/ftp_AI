@@ -132,3 +132,113 @@ def test_the_provider_copy_has_tokens_and_blurred_amounts():
     assert "Gulshan" not in text and "0101" not in text and "969815" not in text
     assert v.token("BR", "0101") in text and v.token("DIV", "3") in text
     assert "0.097 cr" in text and "+25 bp" in text
+
+
+# --- names that repeat, and plans that answer another question ------------------- #
+
+from app.ai.copilot.chat import ambiguous_names  # noqa: E402
+from app.ai.gateway.tokenizer import Entity  # noqa: E402
+
+
+def _branches() -> Vault:
+    v = Vault()
+    v.register([Entity("BR", "100", "Dhaka Main (100)", ("Dhaka Main", "100")),
+                Entity("BR", "105", "Dhaka Main (105)", ("Dhaka Main", "105")),
+                Entity("BR", "111", "Chattogram GEC (111)", ("Chattogram GEC", "111"))])
+    return v
+
+
+def test_a_name_two_branches_share_is_asked_about():
+    v = _branches()
+    [(name, options)] = ambiguous_names("Why did Dhaka Main lose deposits while Chattogram GEC grew?", v)
+    assert name == "dhaka main" and options == ["Dhaka Main (100)", "Dhaka Main (105)"]
+
+
+def test_a_code_beside_the_name_settles_it_and_masks_to_that_branch():
+    v = _branches()
+    for q in ("How is Dhaka Main 105 doing?", "How is Dhaka Main (105) doing?", "How is dhaka main,105 doing?"):
+        assert ambiguous_names(q, v) == []
+        assert v.token("BR", "105") in v.mask_text(q) and v.token("BR", "100") not in v.mask_text(q)
+
+
+def test_why_on_deposits_becomes_a_comparison_of_the_named_branches():
+    p = parse_plan('{"tool":"why","metrics":["deposits"],"branches":["BR_AAA","BR_BBB"]}')
+    assert p.tool == "compare" and p.by == "branch" and p.compare and p.metrics == ("deposits",)
+
+
+def test_why_on_profit_stays_why():
+    assert parse_plan('{"tool":"why","by":"product"}').tool == "why"
+
+
+def test_conditions_that_cannot_both_hold_are_dropped():
+    p = parse_plan('{"tool":"compare","metrics":["deposits"],"by":"branch","where":['
+                   '{"metric":"deposits","op":"lt","value":0},{"metric":"deposits","op":"gt","value":0}]}')
+    assert p.where == ()
+    q = parse_plan('{"tool":"compare","metrics":["nim"],"where":['
+                   '{"metric":"nim","op":"gt","value":8},{"metric":"nim","op":"lt","value":9}]}')
+    assert len(q.where) == 2                                 # a real band is kept
+
+
+def test_a_shorter_name_inside_a_longer_one_is_not_a_mention():
+    v = _branches()
+    v.register([Entity("DIST", "DHA", "Dhaka district", ("Dhaka",)),
+                Entity("DIV", "D", "Dhaka division", ("Dhaka",))])
+    assert ambiguous_names("How is Dhaka Main (100) doing?", v) == []
+    [(name, _)] = ambiguous_names("Deposits in Dhaka this week?", v)
+    assert name == "dhaka"
+
+
+def test_the_planner_instructions_build_and_every_example_is_a_valid_plan():
+    import json as _json
+    from app.ai.copilot.catalog import planner_system
+    text = planner_system()                       # raises if a brace is unescaped
+    examples = [ln for ln in text.splitlines() if ln.startswith("{")]
+    assert len(examples) >= 6
+    for ln in examples:
+        parse_plan(_json.loads(ln))               # each example is itself a valid plan
+
+
+def test_wording_that_moves_a_figure_the_wrong_way_is_caught():
+    from app.ai.copilot.result import direction_conflicts
+    plan = parse_plan('{"tool":"compare","metrics":["deposits","cost_of_deposits"],"by":"branch","compare":true}')
+    rows = [{"label": "Dhaka Main (100)", "deposits__change": D("576225.96"), "cost_of_deposits__change": D("-0.0418")},
+            {"label": "Chattogram GEC (111)", "deposits__change": D("831741.88"), "cost_of_deposits__change": D("0.0011")}]
+    qwen = ("Dhaka Main (100) lost deposits while Chattogram GEC (111) grew because Dhaka Main (100)'s "
+            "deposits fell by 0.0576 cr, and Chattogram GEC (111)'s deposits rose by 0.0832 cr.\n"
+            "- Dhaka Main (100)'s cost of deposits dropped by -4 bp.")
+    assert direction_conflicts(qwen, plan, rows) == ["Dhaka Main (100) deposits"]
+    honest = ("The figures do not show that: deposits rose at both branches. Dhaka Main (100)'s deposits "
+              "rose by 0.0576 cr and Chattogram GEC (111)'s grew by 0.0832 cr.")
+    assert direction_conflicts(honest, plan, rows) == []
+
+
+# --- the page a question is asked on --------------------------------------------- #
+
+from app.ai.copilot.chat import merge_where  # noqa: E402
+from app.ai.copilot.catalog import PAGES, suggestions  # noqa: E402
+from app.ai.copilot.tools import Where  # noqa: E402
+
+
+def test_the_page_filters_fill_what_the_question_left_open():
+    merged, used = merge_where(Where(), Where(division_id=2, side="LIABILITY"))
+    assert used and merged.division_id == 2 and merged.side == "LIABILITY"
+
+
+def test_a_place_named_in_the_question_replaces_the_pages_place_entirely():
+    # Asking about a branch while the page is filtered to another division must
+    # not intersect the two into nothing.
+    merged, used = merge_where(Where(branch_codes=("111",)), Where(division_id=3, category="URBAN"))
+    assert merged.branch_codes == ("111",) and merged.division_id is None and merged.category is None
+    assert not used
+
+
+def test_what_and_where_are_merged_separately():
+    merged, used = merge_where(Where(product_codes=("TDR03",)), Where(division_id=3, side="ASSET"))
+    assert merged.division_id == 3 and merged.product_codes == ("TDR03",) and merged.side is None
+    assert used
+
+
+def test_every_page_has_a_description_and_page_questions_come_first():
+    assert all(label and what for label, what in PAGES.values())
+    assert suggestions("HO", "coach")[0].startswith("Why is this branch")
+    assert suggestions("HO", None) == suggestions("HO", "nowhere")

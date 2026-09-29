@@ -44,6 +44,7 @@ METRICS: dict[str, Metric] = {
     "ftp_yield": Metric("FTP yield", "pct", "rate", "net FTP profit over all balances, % a year"),
 }
 
+PROFIT_METRICS = ("net_ftp_profit", "lending_ftp_profit", "deposit_ftp_profit")
 DIMENSIONS = ("total", "branch", "product", "division", "district", "category")
 PERIODS = ("latest_day", "last_7_days", "last_30_days", "this_month", "last_month", "all", "custom")
 CHARTS = ("bar", "line", "none")
@@ -90,6 +91,8 @@ class Plan:
     title: str = ""
     #: For clarify: the question to put back to the person.
     message: str = ""
+    #: The question (or plan) chose its own period; a page's dates do not apply.
+    period_set: bool = False
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()}
@@ -196,7 +199,25 @@ def parse_plan(raw: str | dict) -> Plan:
         where.append(Condition(m, op, value))
         if m not in metrics:
             metrics = metrics + (m,)
-    compare = bool(d.get("compare")) or any(c.op.startswith("change") for c in where) or tool == "why"
+    # "above X and below Y" on the same measure with X >= Y can match nothing:
+    # a model's muddle, not a filter. Drop the pair rather than return nothing.
+    for m in {c.metric for c in where}:
+        for kind in ("", "change_"):
+            gt = [c for c in where if c.metric == m and c.op == f"{kind}gt"]
+            lt = [c for c in where if c.metric == m and c.op == f"{kind}lt"]
+            if gt and lt and max(c.value for c in gt) >= min(c.value for c in lt):
+                where = [c for c in where if c not in gt + lt]
+    # "why" explains FTP profit. A question about another measure (deposits,
+    # cost of deposits...) is a comparison of that measure, period on period.
+    if tool == "why" and d.get("metrics") and not any(
+            m in PROFIT_METRICS for m in _list(d.get("metrics"))):
+        tool, was_why = "compare", True
+    else:
+        was_why = False
+    if _list(d.get("branches")) and d.get("by") in (None, "", "total"):
+        by = "branch"
+    compare = bool(d.get("compare")) or any(c.op.startswith("change") for c in where) \
+        or tool == "why" or was_why
 
     sort = _str(d.get("sort"), 50)
     if sort is not None:
@@ -220,7 +241,8 @@ def parse_plan(raw: str | dict) -> Plan:
                 district=_str(d.get("district")), branches=_list(d.get("branches")),
                 products=_list(d.get("products")), side=side, category=cat, where=tuple(where),
                 sort=sort, order=order, limit=limit, chart=chart, codes=codes,
-                title=_str(d.get("title"), 90) or "")
+                title=_str(d.get("title"), 90) or "",
+                period_set=bool(d.get("period") or d.get("date_from") or d.get("date_to")))
 
 
 def window(p: Plan, latest: date, earliest: date) -> tuple[date, date]:
@@ -247,8 +269,46 @@ def prior(start: date, end: date) -> tuple[date, date]:
     return start - timedelta(days=n), start - timedelta(days=1)
 
 
-def suggestions(scope: str) -> list[str]:
-    """Questions worth asking first, for the asker's level."""
+#: What each page shows, so a question asked on it can be read in its light.
+PAGES: dict[str, tuple[str, str]] = {
+    "basic": ("Basic overview", "balances, interest and FTP profit by branch, and the daily FTP profit trend"),
+    "daily": ("Daily", "what needs attention, the banking ratios (yield on advances, cost of deposits, "
+                       "spread, NIM, CASA, credit-deposit), and yield and cost by product"),
+    "overview": ("Overview", "net FTP profit with its change on the previous period, trend, and sources of margin"),
+    "analytics": ("Analytics", "why FTP profit changed (volume and rate), concentration, and rate distribution"),
+    "leaders": ("Leaders", "the best branches in each group and which product leads where"),
+    "accounts": ("Accounts", "loss-making accounts and repricing opportunities"),
+    "consolidated": ("Consolidated", "every account-day as one row"),
+    "intel": ("Intelligence", "the morning brief, open findings, the market curve and FTP benchmarks against it"),
+    "coach": ("Branch coach", "one branch's rank, its gap to its peers' median, and its actions for the week"),
+    "rates": ("Rate configuration", "the FTP benchmark, liquidity and other cost rates in force"),
+    "upload": ("Upload", "loading bank data files and their checks"),
+    "admin": ("Master data", "the branch and product masters"),
+    "activity": ("Activity log", "changes made in the system"),
+    "ai": ("AI management", "AI providers and the data policy"),
+}
+
+_PAGE_SUGGESTIONS = {
+    "daily": ["Why did cost of deposits move this week?", "Which products have the lowest FTP yield?"],
+    "basic": ["Which 5 branches made the most FTP profit?", "Why did FTP profit change this week?"],
+    "overview": ["Why did net FTP profit change?", "How has FTP profit moved day by day?"],
+    "analytics": ["Which products drove the change in FTP profit?", "Which branches' FTP yield fell most?"],
+    "leaders": ["Rank the branches by FTP yield", "Which divisions made the most FTP profit?"],
+    "accounts": ["Which products have the most loss-making accounts?"],
+    "rates": ["Which benchmarks are furthest from the market?"],
+    "intel": ["Which benchmarks are furthest from the market?", "Where are call money and T-bill yields today?"],
+    "coach": ["Why is this branch's cost of deposits above its peers?",
+              "How has this branch's FTP profit moved over the last 30 days?"],
+}
+
+
+def suggestions(scope: str, page: str | None = None) -> list[str]:
+    """Questions worth asking first, for the asker's level and the page they are on."""
+    first = _PAGE_SUGGESTIONS.get(page or "", [])
+    return first + [q for q in _suggestions(scope) if q not in first]
+
+
+def _suggestions(scope: str) -> list[str]:
     common = ["Which 5 branches made the most FTP profit last week?",
               "Why did FTP profit change this week?",
               "Which products have the lowest FTP yield this month?",
@@ -298,6 +358,9 @@ Reply with a single JSON object, no prose. Fields:
 
 Rules:
 - Tokens (BR_…, DIST_…, DIV_…) stand for real names you are not shown. Copy them exactly; never invent one.
+- When the question names branches, put every one of their tokens in "branches" and use by "branch".
+- "why" is only for FTP profit. For why deposits, loans or a rate moved, use "compare" with compare: true.
+- Do not assume the question's premise is true: plan the query that would show whether it is.
 - "Rose/fell/changed/grew" needs compare: true, and "rose by more than X" is a change_gt condition.
 - "Top/best/worst N" is sort + order + limit. "Loans" means side ASSET, "deposits" side LIABILITY.
 - Periods are relative to the latest business date given below, not to today.
@@ -308,6 +371,8 @@ Q: which 5 branches made the most FTP profit last week?
 {{"tool":"compare","metrics":["net_ftp_profit"],"by":"branch","period":"last_7_days","sort":"net_ftp_profit","order":"desc","limit":5,"chart":"bar","title":"Top 5 branches by FTP profit"}}
 Q: branches in DIV_4TA whose cost of deposits rose more than 25 bp this month
 {{"tool":"compare","metrics":["cost_of_deposits"],"by":"branch","division":"DIV_4TA","period":"this_month","compare":true,"where":[{{"metric":"cost_of_deposits","op":"change_gt","value_bp":25}}],"sort":"change:cost_of_deposits","order":"desc","chart":"bar","title":"Branches where deposits got dearer"}}
+Q: why did BR_K7Q lose deposits while BR_2MX grew?
+{{"tool":"compare","metrics":["deposits","cost_of_deposits"],"by":"branch","branches":["BR_K7Q","BR_2MX"],"period":"last_7_days","compare":true,"chart":"bar","title":"Deposits at the two branches"}}
 Q: how has NIM moved over the last month?
 {{"tool":"trend","metrics":["nim"],"period":"last_30_days","chart":"line","title":"Net interest margin, daily"}}
 Q: why did profit fall this week?

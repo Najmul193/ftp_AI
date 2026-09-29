@@ -23,6 +23,10 @@ from itertools import combinations
 from typing import Iterable
 
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+#: Models write dates and ranges with typographic dashes ("2026‑09‑23" with
+#: non-breaking hyphens). As ordinary hyphens they read as the dates they are,
+#: not as a stray "23" to verify.
+_DASHES = str.maketrans({"‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-"})
 _TOKEN = re.compile(r"\b(?:BR|PRD|DIST|DIV|ACCT|USER)_[0-9A-Z]{3}\b")
 _MON = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
         r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?")
@@ -50,7 +54,7 @@ def _to_dec(s: str) -> Decimal | None:
 
 def numbers_in(text: str) -> list[tuple[str, Decimal, str]]:
     """(raw, value, trailing context) for each number in `text`."""
-    t = _TOKEN.sub(" ", _DATE.sub(" ", text.translate(_BN_DIGITS)))
+    t = _TOKEN.sub(" ", _DATE.sub(" ", text.translate(_BN_DIGITS).translate(_DASHES)))
     out = []
     for m in _NUM.finditer(t):
         v = _to_dec(m.group(0))
