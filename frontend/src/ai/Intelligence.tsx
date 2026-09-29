@@ -96,11 +96,8 @@ export default function Intelligence() {
   if (!d) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
 
   const byCode = Object.fromEntries(d.series.map((s) => [s.code, s]));
-  const bdMissing = d.series.filter((s) => s.source === "bb_paste" && s.value == null
-                                           && ["BB_CALL_ON", "BB_TBILL_91", "BB_POLICY"].includes(s.code));
   const prices = d.jobs.market_prices;
   const newsJob = d.jobs.market_news;
-  const bbJob = d.jobs.market_bb;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -113,18 +110,14 @@ export default function Intelligence() {
       {/* --- freshness ---------------------------------------------------- */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
                     fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>
-        <Pill tone={bbJob?.last_status === "blocked" ? "critical" : bbJob?.last_success ? "good" : "warning"}>
-          Bangladesh Bank {bbJob?.last_status === "blocked" ? "paused: paste rates below"
-            : bbJob?.last_success ? `read ${ago(bbJob.last_success)}` : "not read yet"}
-        </Pill>
         <Pill tone={prices.last_success ? "good" : "warning"}>
           Global prices {prices.last_success ? `updated ${ago(prices.last_success)}` : "not collected yet"}
         </Pill>
         <Pill tone={newsJob.last_success ? "good" : "warning"}>
           News {newsJob.last_success ? `updated ${ago(newsJob.last_success)}` : "not collected yet"}
         </Pill>
-        {(prices.errors?.length || newsJob.errors?.length || bbJob?.errors?.length) ? (
-          <span title={[...(prices.errors ?? []), ...(newsJob.errors ?? []), ...(bbJob?.errors ?? [])].join("\n")}>
+        {(prices.errors?.length || newsJob.errors?.length) ? (
+          <span title={[...(prices.errors ?? []), ...(newsJob.errors ?? [])].join("\n")}>
             <Pill tone="warning">Some sources failed</Pill></span>) : null}
         <span style={{ flex: 1 }} />
         {msg && <span>{msg}</span>}
@@ -132,18 +125,7 @@ export default function Intelligence() {
           {refreshing ? "Collecting…" : "Collect now"}</MiniButton>}
       </div>
 
-      {bdMissing.length > 0 && (
-        <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--status-warning)",
-                      background: "var(--surface-2)", fontSize: "var(--fs-base)" }}>
-          <Pill tone="warning">Bangladesh rates missing</Pill>{" "}
-          <span style={{ color: "var(--text-secondary)" }}>
-            {bdMissing.map((s) => s.short).join(", ")} {bdMissing.length === 1 ? "has" : "have"} no
-            value yet. They are read from bb.org.bd every two hours in Dhaka business hours;
-            {editor ? " to fill them now, use Collect now or paste the page below." :
-              " head-office treasury can also enter them."}
-          </span>
-        </div>
-      )}
+      <BbRatesPanel d={d} editor={editor} onChanged={() => setTick((t) => t + 1)} />
 
       {/* --- market pulse ------------------------------------------------- */}
       <Grid cols="repeat(auto-fill, minmax(190px, 1fr))" gap={12}>
@@ -161,7 +143,6 @@ export default function Intelligence() {
 
       <CurveCard d={d} />
       <BenchmarkCard d={d} />
-      {editor && <EnterRates onSaved={() => setTick((t) => t + 1)} />}
       <NewsCard />
 
       <p style={{ ...hint, textAlign: "center" }}>
@@ -300,6 +281,89 @@ function BenchmarkCard({ d }: { d: MarketOverview }) {
 }
 
 // --------------------------------------------------------------------------
+// Bangladesh Bank rates: read automatically, refresh on demand, paste if not
+// --------------------------------------------------------------------------
+
+const REQUIRED = ["BB_CALL_ON", "BB_TBILL_91", "BB_TBILL_364"];
+
+function BbRatesPanel({ d, editor, onChanged }: {
+  d: MarketOverview; editor: boolean; onChanged: () => void;
+}) {
+  const job = d.jobs.market_bb;
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [manual, setManual] = useState(false);
+
+  const missing = d.series.filter((s) => REQUIRED.includes(s.code) && s.value == null);
+  const lastFailed = job?.last_status === "blocked" || job?.last_status === "failed"
+    || Boolean(job?.errors?.length);
+  const failed = outcome ? !outcome.ok : lastFailed || missing.length > 0;
+  const reason = outcome && !outcome.ok ? outcome.text
+    : job?.blocked ? "bb.org.bd asked for human verification, so automatic reading is paused for a day."
+    : job?.errors?.length ? job.errors.join("; ")
+    : missing.length ? `${missing.map((s) => s.short).join(", ")} ${missing.length === 1 ? "has" : "have"} no value yet.`
+    : "";
+
+  const refresh = async () => {
+    setBusy(true); setOutcome(null);
+    try {
+      const r = await marketApi.refreshBb();
+      const pages = Object.values(r.pages ?? {});
+      const found = pages.reduce((n, p) => n + p.found, 0);
+      const changed = pages.reduce((n, p) => n + p.new_or_changed, 0);
+      if (r.status === "ok" || (r.status === "partial" && found > 0)) {
+        setOutcome({ ok: r.status === "ok", text: r.status === "ok"
+          ? `Read ${found} rates from bb.org.bd just now; ${changed ? `${changed} new or changed` : "no change since the last read"}.`
+            + (r.differences?.length ? ` ${r.differences.length} differ from values treasury entered; those were kept.` : "")
+          : `Read ${found} rates, but part failed: ${(r.errors ?? []).join("; ")}` });
+      } else {
+        setOutcome({ ok: false, text: r.blocked ?? r.error ?? r.reason ?? (r.errors ?? []).join("; ")
+                                      ?? "Bangladesh Bank could not be read." });
+      }
+      onChanged();
+    } catch (e) {
+      setOutcome({ ok: false, text: (e as Error).message });
+    } finally { setBusy(false); }
+  };
+
+  const status = job?.last_success
+    ? <>Last read {ago(job.last_success)}{lastFailed && job.last_run ? `; last attempt ${ago(job.last_run)} failed` : ""}</>
+    : <>Not read yet</>;
+
+  return (
+    <Card title="Bangladesh Bank rates"
+          subtitle="Call money, reference rates and treasury auctions are read from bb.org.bd automatically every two hours, Sunday to Thursday, 09:30–20:00 Dhaka time"
+          actions={editor && (
+            <Button icon="refresh" disabled={busy} onClick={refresh}>
+              {busy ? "Reading bb.org.bd…" : "Refresh now"}</Button>)}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <p style={para}>
+          <Pill tone={failed ? "warning" : "good"}>{failed ? "Needs attention" : "Up to date"}</Pill>{" "}
+          {status}.{" "}
+          {outcome?.ok && <span>{outcome.text}</span>}
+        </p>
+        {failed && reason && (
+          <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--status-warning)",
+                        background: "var(--surface-2)" }}>
+            <p style={para}><b>Automatic reading did not work.</b> {reason}</p>
+            <p style={{ ...para, marginTop: 6 }}>
+              {editor ? "Paste the page in below instead; the steps and links are there."
+                : <>Head-office treasury can paste the page in by hand. The pages:{" "}
+                  {BB_PAGES.map(([l, u], i) => (<span key={u}>{i > 0 && " · "}
+                    <a href={u} target="_blank" rel="noreferrer">{l} ↗</a></span>))}</>}
+            </p>
+          </div>)}
+        {editor && (failed || manual
+          ? <EnterRates onSaved={() => { setOutcome(null); onChanged(); }} />
+          : <button type="button" onClick={() => setManual(true)} style={{
+              all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: "var(--fs-sm)" }}>
+              Enter or correct rates by hand, or set the policy rate →</button>)}
+      </div>
+    </Card>
+  );
+}
+
+// --------------------------------------------------------------------------
 // Treasury: paste the Bangladesh Bank page
 // --------------------------------------------------------------------------
 
@@ -356,8 +420,11 @@ function EnterRates({ onSaved }: { onSaved: () => void }) {
   };
 
   return (
-    <Card title="Enter Bangladesh Bank rates"
-          subtitle="Rates are read from bb.org.bd automatically. Use this if a page could not be read, or to correct a value: a rate entered here is never overwritten by the automatic reader">
+    <section style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+      <h3 style={{ margin: "0 0 4px", fontSize: "var(--fs-base)", fontWeight: 650,
+                   color: "var(--text-primary)" }}>Enter rates by hand</h3>
+      <p style={{ ...hint, marginBottom: 10 }}>A rate entered here is never overwritten by the
+        automatic reader; if bb.org.bd later shows a different figure, the difference is reported.</p>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <p style={para}>
           1. Open a Bangladesh Bank page:{" "}
@@ -428,7 +495,7 @@ function EnterRates({ onSaved }: { onSaved: () => void }) {
           </div>
         </div>
       </div>
-    </Card>
+    </section>
   );
 }
 

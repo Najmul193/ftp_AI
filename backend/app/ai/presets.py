@@ -55,7 +55,7 @@ PRESETS: dict[str, Preset] = {p.brand: p for p in (
            True, False, False, ("deepseek-chat",), "https://platform.deepseek.com/api_keys",
            "Paid API hosted outside Bangladesh; review data residency."),
     Preset("ollama", "Ollama (on-premise)", "openai_compat", "http://localhost:11434/v1",
-           False, False, True, ("llama3.1:8b", "qwen2.5:14b", "gemma3:12b"),
+           False, False, True, ("qwen3:8b", "llama3.1:8b", "gemma3:12b"),
            "https://ollama.com/download",
            "Runs on the bank's own server. Nothing leaves the network."),
     Preset("custom", "Custom (OpenAI-compatible)", "openai_compat", "",

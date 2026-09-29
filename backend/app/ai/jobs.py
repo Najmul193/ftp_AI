@@ -39,6 +39,10 @@ def run_job(job: str, trigger: str = "schedule", **kwargs) -> dict:
     with session_scope() as db:
         if not settings_service.state(db).enabled:
             return {"job": job, "status": "skipped", "reason": "AI is switched off"}
+        # A restarted server starts a fresh scheduler whose first runs come
+        # within a minute; without this every restart re-read every source.
+        if trigger == "schedule" and job not in due_jobs(db):
+            return {"job": job, "status": "skipped", "reason": "ran recently"}
         key = _LOCK_BASE + list(_RUNNERS).index(job)
         if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}):
             return {"job": job, "status": "skipped", "reason": "already running elsewhere"}
@@ -85,8 +89,11 @@ def status(db: Session) -> dict:
         last = db.scalar(select(JobRun).where(JobRun.job == job).order_by(desc(JobRun.id)).limit(1))
         ok = db.scalar(select(func.max(JobRun.finished_at))
                        .where(JobRun.job == job, JobRun.status.in_(("ok", "partial"))))
+        detail = (last.detail or {}) if last else {}
         out[job] = {"last_status": last.status if last else None,
                     "last_run": last.started_at if last else None,
                     "last_success": ok,
-                    "errors": (last.detail or {}).get("errors") if last else None}
+                    "errors": detail.get("errors") or ([detail["error"]] if detail.get("error") else None),
+                    "blocked": detail.get("blocked"),
+                    "pages": detail.get("pages")}
     return out

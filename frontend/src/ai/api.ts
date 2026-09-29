@@ -125,6 +125,15 @@ export interface BenchmarkRow {
 export interface JobState {
   last_status: string | null; last_run: string | null; last_success: string | null;
   errors: string[] | null;
+  /** Set when the site asked for human verification: reading is paused. */
+  blocked?: string | null;
+  pages?: Record<string, { found: number; new_or_changed: number; warnings: string[] }> | null;
+}
+
+export interface BbRefresh {
+  job: string; status: "ok" | "partial" | "blocked" | "failed" | "skipped";
+  pages?: Record<string, { found: number; new_or_changed: number; warnings: string[] }>;
+  errors?: string[]; blocked?: string; differences?: string[]; error?: string; reason?: string;
 }
 
 export interface MarketOverview {
@@ -163,6 +172,8 @@ export const marketApi = {
   save: (source: "bb_paste" | "manual", entries: Entry[]) =>
     request<{ saved: number; changed: number }>("/ai/market/entries",
       { method: "POST", ...json({ source, entries }) }),
+  /** Read Bangladesh Bank's pages now (treasury desk, head office). */
+  refreshBb: () => request<BbRefresh>("/ai/market/refresh-bb", { method: "POST" }),
   refresh: () => request<{ results: { job: string; status: string }[] }>(
     "/ai/market/refresh", { method: "POST" }),
 };

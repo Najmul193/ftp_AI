@@ -405,6 +405,15 @@ def market_entries(body: EntriesIn, db: DbDep, user: MarketEditor,
     return {"saved": len(body.entries), "changed": changed}
 
 
+@router.post("/market/refresh-bb", dependencies=[Depends(require_ai_enabled)])
+def market_refresh_bb(_user: MarketEditor) -> dict:
+    """Read Bangladesh Bank's rate pages now, at any hour, for the treasury desk."""
+    r = jobs.run_job("market_bb", "manual")
+    if r.get("status") in ("ok", "partial"):
+        jobs.run_job("insights", "event")
+    return r
+
+
 @router.post("/market/refresh", dependencies=[Depends(require_ai_enabled)])
 def market_refresh(_user: HoAdmin) -> dict:
     """Collect prices and news now instead of waiting for the schedule."""

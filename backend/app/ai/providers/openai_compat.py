@@ -7,9 +7,16 @@ Plain HTTP, so none of their SDKs is a dependency.
 
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from app.ai.providers.base import ChatMessage, Completion, ProviderError, chat_models
+
+
+#: Reasoning models served locally (Qwen3, DeepSeek-R1) may write their
+#: working inline before the answer.
+_THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 
 
 class OpenAICompatProvider:
@@ -57,10 +64,15 @@ class OpenAICompatProvider:
         body["max_completion_tokens" if self.brand == "openai" else "max_tokens"] = max_tokens
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if self.brand == "ollama":
+            # Every call here wants a short structured answer. A reasoning
+            # model (Qwen3) otherwise spends the whole token budget thinking
+            # and returns an empty reply, many times slower.
+            body["reasoning_effort"] = "none"
         data = self._call("POST", "/chat/completions", json=body)
         try:
             choice = data["choices"][0]
-            text = choice["message"].get("content") or ""
+            text = _THINK.sub("", choice["message"].get("content") or "").strip()
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError("bad_request", f"unexpected response shape: {str(data)[:200]}") from exc
         usage = data.get("usage") or {}

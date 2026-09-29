@@ -282,6 +282,10 @@ def narrate(db: Session, caller: Caller, scope_key: str, lang: str,
     if text.bank:
         segments.append(Segment("bank", text.bank))
     segments.append(Segment("public", text.public))
+    if lang == "bn":
+        segments.append(Segment("instruction", "ব্রিফটি বাংলায় লিখুন (write it in Bangla script); "
+                                               "keep the three headings in English and numbers "
+                                               "as given."))
     turn = Turn("user", segments)
     facts = differences_by_line(turn.text)
     r = gw.call(db, caller, GatewayRequest(

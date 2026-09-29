@@ -345,6 +345,12 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str) -> Iter
         if data_text:
             kind = "public" if plan.tool == "market" else "bank"
             segs.append(Segment(kind, f"RESULT:\n{data_text}"))
+        if lang == "bn":
+            # Smaller models follow the last instruction they read, not one
+            # at the end of a long system prompt.
+            segs.append(Segment("instruction", "উত্তরটি বাংলায় লিখুন (write the answer in Bangla "
+                                               "script). Keep tokens, product names and numbers "
+                                               "exactly as given."))
         facts = None if explain else (differences_by_line(data_text)
                                       + [v for _, v, _ in numbers_in(masked_q)])
         try:
