@@ -13,7 +13,7 @@ import httpx
 
 from app.ai.market import sources
 from app.ai.permissions import AI_GRANTS
-from app.ai.providers.base import agentic_default
+from app.ai.presets import agentic_default
 from app.ai.public import match, parse
 
 FIX = Path(__file__).parent / "fixtures"

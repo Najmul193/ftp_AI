@@ -8,6 +8,7 @@ released after this file was written is still selectable.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from urllib.parse import urlparse
 
@@ -65,6 +66,28 @@ PRESETS: dict[str, Preset] = {p.brand: p for p in (
            "Any endpoint that implements the OpenAI chat-completions API "
            "(vLLM, Azure OpenAI proxy, LM Studio, ...)."),
 )}
+
+
+#: Model families that reliably follow a multi-step protocol: read a result,
+#: decide the next lookup, stop when they have enough. Smaller local models
+#: lose the thread after a step or two and answer from one lookup instead.
+_AGENTIC = ("claude", "gpt-4", "gpt-5", "o3", "o4", "gemini-2.5", "gemini-3", "deepseek",
+            "llama-3.3-70b", "llama-4", "qwen3-235b", "qwen-max", "qwen3-coder", "kimi",
+            "mistral-large", "gpt-oss-120b", "grok")
+_SIZE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?![a-z])")
+
+
+def agentic_default(kind: str, model: str) -> bool:
+    """Whether the copilot should let this model chain lookups, by default.
+
+    An administrator can override it per provider; this is only the guess."""
+    if kind == "anthropic":
+        return True
+    low = (model or "").lower()
+    size = _SIZE.search(low)
+    if size and float(size.group(1)) < 30:
+        return False
+    return any(f in low for f in _AGENTIC) or bool(size and float(size.group(1)) >= 60)
 
 
 def presets_public() -> list[dict]:

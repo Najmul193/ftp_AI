@@ -16,8 +16,7 @@ from sqlalchemy.orm import Session
 from app.ai import crypto
 from app.ai.gateway.policy import FieldPolicy, Tier
 from app.ai.models import AiProvider
-from app.ai.presets import PRESETS, validate_base_url
-from app.ai.providers.base import agentic_default
+from app.ai.presets import PRESETS, agentic_default, validate_base_url
 from app.core.config import settings as core
 from app.models import SystemSetting
 from app.services import audit

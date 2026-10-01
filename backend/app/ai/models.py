@@ -57,7 +57,7 @@ class AiProvider(AiBase):
     #: 0 means unlimited.
     daily_token_budget: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     #: May the copilot let this model chain several lookups? None: decided
-    #: from the model's name (`providers.base.agentic_default`).
+    #: from the model's name (`presets.agentic_default`).
     agentic: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
