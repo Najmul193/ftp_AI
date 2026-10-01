@@ -281,6 +281,8 @@ PAGES: dict[str, tuple[str, str]] = {
     "consolidated": ("Consolidated", "every account-day as one row"),
     "intel": ("Intelligence", "the morning brief, open findings, the market curve and FTP benchmarks against it"),
     "coach": ("Branch coach", "one branch's rank, its gap to its peers' median, and its actions for the week"),
+    "outlook": ("Outlook", "forecasts of the book to month-end, market rates 90 days ahead, which way the "
+                           "policy rate leans at the next MPC, and our product rates against other banks'"),
     "rates": ("Rate configuration", "the FTP benchmark, liquidity and other cost rates in force"),
     "upload": ("Upload", "loading bank data files and their checks"),
     "admin": ("Master data", "the branch and product masters"),
@@ -297,6 +299,8 @@ _PAGE_SUGGESTIONS = {
     "accounts": ["Which products have the most loss-making accounts?"],
     "rates": ["Which benchmarks are furthest from the market?"],
     "intel": ["Which benchmarks are furthest from the market?", "Where are call money and T-bill yields today?"],
+    "outlook": ["How has net interest margin moved over the last 30 days?",
+                "Where are call money and T-bill yields today?"],
     "coach": ["Why is this branch's cost of deposits above its peers?",
               "How has this branch's FTP profit moved over the last 30 days?"],
 }

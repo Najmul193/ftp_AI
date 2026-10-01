@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.insights.facts import (
-    BenchmarkGap, Delta, FactSheet, MarketPoint, NewsLine, Segment,
+    BenchmarkGap, Delta, FactSheet, Landing, MarketPoint, NewsLine, PeerGap, PolicyView, Segment,
 )
 from app.ai.market import catalog
 from app.ai.market import service as market
@@ -221,4 +221,40 @@ def build(db: Session, scope: Scope, *, today: date | None = None,
             _book(db, a, fs, latest)
     if scope.head_office:
         fs.benchmarks = _benchmarks(db, fs.market)
+    _outlook(db, scope, fs)
     return fs
+
+
+def _outlook(db: Session, scope: Scope, fs: FactSheet) -> None:
+    """Forecasts and the market's posted rates: what the detectors look ahead with.
+
+    Imported here, not at the top: the forecasts read this module's fingerprint."""
+    from app.ai.forecast import service as forecast
+    from app.ai.public import service as public
+
+    try:
+        o = forecast.policy_outlook(db)
+        drivers = sorted(o["drivers"], key=lambda d: -abs(d["push"]))[:2]
+        fs.policy = PolicyView(o["leaning"], o["odds"], o["next_meeting"], o["repo"],
+                               tuple(d["explain"] for d in drivers))
+    except Exception:  # noqa: BLE001 - an outlook must never stop the feed
+        fs.policy = None
+    if scope.filter is not None and fs.has_book:
+        try:
+            book = forecast.book_outlook(db, forecast.BookScope(scope.filter, label=scope.label),
+                                         ("net_ftp_profit", "deposits", "advances"))
+        except Exception:  # noqa: BLE001
+            book = {"available": False}
+        for m in book.get("metrics", []) if book.get("available") else []:
+            mo = m.get("month")
+            if not mo:
+                continue
+            fs.landings[m["metric"]] = Landing(
+                m["metric"], m["label"], m["unit"], m["kind"], book["month_end"],
+                _d(m["last"]["value"]), _d(mo["p10"]), _d(mo["p50"]), _d(mo["p90"]),
+                _d(mo.get("so_far")), _d(mo.get("previous_month")), m["confidence"])
+    if scope.head_office:
+        fs.peer_gaps = [PeerGap(r["product_code"], r["side"], r["peer_label"], r["our_rate"],
+                                r["market_median"], r["pcb_median"], r["p25"], r["p75"],
+                                r["balance"], r["month"])
+                        for r in public.book_vs_peers(db)]

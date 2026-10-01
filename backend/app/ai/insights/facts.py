@@ -101,6 +101,50 @@ class NewsLine:
     tags: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class PeerGap:
+    """One of this bank's products against the market's posted rates for the
+    like product (Bangladesh Bank's bank-by-bank table)."""
+    product_code: str
+    side: str                       # ASSET | LIABILITY
+    peer_label: str
+    our_rate: Decimal               # what customers actually get, balance-weighted
+    market_median: Decimal
+    pcb_median: Decimal | None      # private commercial banks: the real competitors
+    p25: Decimal | None
+    p75: Decimal | None
+    balance: Decimal
+    month: date | None
+
+
+@dataclass(frozen=True)
+class Landing:
+    """Where a measure is heading by month-end: a forecast with its band."""
+    metric: str
+    label: str
+    unit: str                       # bdt | pct
+    kind: str                       # stock | flow | rate
+    month_end: date
+    last: Decimal
+    p10: Decimal
+    p50: Decimal
+    p90: Decimal
+    #: For a flow: the month so far and the whole of last month.
+    so_far: Decimal | None = None
+    previous_month: Decimal | None = None
+    confidence: str = "low"
+
+
+@dataclass(frozen=True)
+class PolicyView:
+    leaning: str                    # hike | hold | cut
+    odds: dict
+    next_meeting: date | None
+    repo: Decimal | None
+    #: The two signals pushing hardest, in words.
+    top: tuple[str, ...] = ()
+
+
 @dataclass
 class FactSheet:
     scope_key: str                  # HO | DIV:<id> | PUBLIC
@@ -125,6 +169,12 @@ class FactSheet:
     market: dict[str, MarketPoint] = field(default_factory=dict)
     benchmarks: list[BenchmarkGap] = field(default_factory=list)
     news: list[NewsLine] = field(default_factory=list)
+    #: Head office: each product's customer rate against the market's.
+    peer_gaps: list[PeerGap] = field(default_factory=list)
+    #: Month-end forecasts for this scope's book.
+    landings: dict[str, Landing] = field(default_factory=dict)
+    #: Which way the policy rate leans at the next meeting (public data).
+    policy: PolicyView | None = None
     #: "BR:0101" -> "Dhaka Main (0101)": how placeholders read to a person.
     names: dict[str, str] = field(default_factory=dict)
     #: Moves when any input moves: data version, market, news.

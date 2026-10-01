@@ -8,15 +8,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from app.ai import jobs
 from app.ai import settings_service as svc
+from app.ai.copilot import tools
+from app.ai.forecast import service as forecast
+from app.ai.forecast import track
+from app.ai.insights import engine
 from app.ai.public import parse as public_parse
 from app.ai.public import service as public
-from app.api.deps import CurrentUser, DbDep, get_active_user, require
+from app.api.deps import CurrentUser, DbDep, ScopeDep, get_active_user, require
+from app.domain.scope import ScopeViolation
 from app.domain.types import ScopeLevel
+from app.models import Branch
 
 router = APIRouter(tags=["ai"])  # included by app.ai.api, which adds /ai
 
@@ -135,3 +142,55 @@ def refresh(_user: MarketEditor) -> dict:
     if r.get("status") in ("ok", "partial"):
         jobs.run_job("insights", "event")
     return r
+
+
+# --- outlook: forecasts ------------------------------------------------------------- #
+
+@router.get("/outlook/market", dependencies=_view)
+def outlook_market(db: DbDep) -> dict:
+    """Market rates 90 days ahead with bands. Public data."""
+    return forecast.market_outlook(db)
+
+
+@router.get("/outlook/policy", dependencies=_view)
+def outlook_policy(db: DbDep) -> dict:
+    """Which way the policy rate leans at the next MPC meeting, and why."""
+    return forecast.policy_outlook(db)
+
+
+@router.get("/outlook/book", dependencies=_view)
+def outlook_book(db: DbDep, user: ActiveUser, scope: ScopeDep,
+                 branch: str | None = Query(None, max_length=20)) -> dict:
+    """The asker's book to month-end, quarter-end and 90 days, with bands.
+
+    `branch` narrows to one branch inside the asker's scope; outside it the
+    platform's own scope check refuses, as on every dashboard."""
+    b = db.scalar(select(Branch).where(Branch.branch_code == branch)) if branch else None
+    if branch and b is None:
+        # An unknown code would otherwise filter nothing and show the whole scope.
+        raise HTTPException(404, f"no branch {branch}")
+    where = tools.Where(branch_codes=(branch,)) if branch else tools.Where()
+    label = f"{b.branch_name} ({b.branch_code})" if b else _scope_label(db, user)
+    try:
+        return forecast.book_outlook(db, forecast.BookScope(scope, where, label))
+    except ScopeViolation as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "that branch is outside your scope") from exc
+
+
+@router.get("/outlook/track-record", dependencies=_view)
+def outlook_track_record(db: DbDep, user: ActiveUser) -> dict:
+    keys = [k for k in engine.visible_keys(user.scope_level, user.scope_id) if k != "PUBLIC"]
+    return track.record(db, keys)
+
+
+def _scope_label(db, user: CurrentUser) -> str:
+    """The asker's part of the bank by name."""
+    from app.models import District, Division
+    if user.scope_level is ScopeLevel.HO:
+        return "Whole bank"
+    model = {ScopeLevel.DIVISION: Division, ScopeLevel.DISTRICT: District}.get(user.scope_level)
+    if model is not None:
+        row = db.get(model, user.scope_id)
+        return f"{row.name} {user.scope_level.value.lower()}" if row else "Your area"
+    b = db.get(Branch, user.scope_id)
+    return f"{b.branch_name} ({b.branch_code})" if b else "Your branch"

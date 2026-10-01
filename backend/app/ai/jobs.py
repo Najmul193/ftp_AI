@@ -19,6 +19,7 @@ from app.ai import settings_service
 from app.ai.insights import engine
 from app.ai.market import service as market
 from app.ai.public import service as public
+from app.ai.forecast import track
 from app.ai.models import JobRun
 from app.core.db import session_scope
 
@@ -27,12 +28,12 @@ log = logging.getLogger(__name__)
 #: job -> minimum minutes between runs. `insights` is cheap when nothing has
 #: changed (it compares a fingerprint first), so it can run often.
 JOBS = {"market_news": 15, "market_prices": 180, "market_bb": 120, "insights": 5,
-        "brief": 30, "prune": 24 * 60, "public_data": 12 * 60}
+        "brief": 30, "prune": 24 * 60, "public_data": 12 * 60, "forecasts": 6 * 60}
 
 _RUNNERS: dict[str, Callable[..., dict]] = {"market_news": market.collect_news, "market_prices": market.collect_prices,
             "market_bb": market.collect_bb, "insights": engine.refresh,
             "brief": engine.scheduled_brief, "prune": market.prune,
-            "public_data": public.collect}
+            "public_data": public.collect, "forecasts": track.run}
 _LOCK_BASE = 820_270_000
 
 

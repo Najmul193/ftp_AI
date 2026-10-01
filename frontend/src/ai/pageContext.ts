@@ -16,6 +16,6 @@ export function pageExtra(): PageExtra { return extra; }
 export const PAGE_LABELS: Record<string, string> = {
   basic: "Basic overview", daily: "Daily", overview: "Overview", analytics: "Analytics",
   leaders: "Leaders", accounts: "Accounts", consolidated: "Consolidated", intel: "Intelligence",
-  coach: "Branch coach", rates: "Rate configuration", upload: "Upload", admin: "Master data",
+  coach: "Branch coach", outlook: "Outlook", rates: "Rate configuration", upload: "Upload", admin: "Master data",
   activity: "Activity log", ai: "AI management",
 };

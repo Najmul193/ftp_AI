@@ -354,3 +354,24 @@ class PeerFinancial(AiBase):
     source_ref: Mapped[str | None] = mapped_column(Text)
     entered_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ForecastRecord(AiBase):
+    """A forecast as it was made, and -- once known -- what actually happened."""
+
+    __tablename__ = "ai_forecasts"
+    __table_args__ = (UniqueConstraint("made_on", "scope_key", "target", "target_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    made_on: Mapped[date] = mapped_column(Date)
+    scope_key: Mapped[str] = mapped_column(String(30))
+    target: Mapped[str] = mapped_column(String(60))
+    target_date: Mapped[date] = mapped_column(Date)
+    unit: Mapped[str] = mapped_column(String(8))
+    p10: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    p50: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    p90: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    confidence: Mapped[str] = mapped_column(String(10))
+    actual: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
+    scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

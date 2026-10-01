@@ -23,7 +23,7 @@ from app.ai.market import catalog, paste, sources
 from app.ai.market.news_tags import tag
 from app.ai.market.tenor import curve_rate, infer_tenor_days
 from app.ai.models import (
-    Brief, Conversation, Insight, JobRun, Macro, MarketNews, MarketObservation, MarketSeries,
+    Brief, Conversation, ForecastRecord, Insight, JobRun, Macro, MarketNews, MarketObservation, MarketSeries,
     PeerFinancial, PeerRate,
 )
 from app.domain.errors import DomainError
@@ -237,6 +237,7 @@ def prune(db: Session) -> dict:
     pf = gone(delete(PeerFinancial).where(
         PeerFinancial.period_end < today - timedelta(days=365 * cfg.AI_PEER_FINANCIALS_YEARS)))
     mc = gone(delete(Macro).where(Macro.year < today.year - cfg.AI_MACRO_YEARS))
+    fc = gone(delete(ForecastRecord).where(ForecastRecord.made_on < today - timedelta(days=730)))
     # The egress log refuses deletes unless this transaction says it is the
     # retention job.
     db.execute(text("SET LOCAL ai.retention_purge = 'on'"))
@@ -245,7 +246,7 @@ def prune(db: Session) -> dict:
              .bindparams(d=days))
     return {"news": n, "job_runs": j, "insights": i, "briefs": b, "conversations": c,
             "ai_requests": r, "market_observations": o, "peer_rates": pr,
-            "peer_financials": pf, "macro": mc}
+            "peer_financials": pf, "macro": mc, "forecasts": fc}
 
 
 # --- treasury entries -------------------------------------------------------- #

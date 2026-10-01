@@ -496,6 +496,158 @@ def branch_movers(fs: FactSheet) -> list[Finding]:
     return out
 
 
+# --- 9. pricing against the market's posted rates (head office) -------------- #
+
+#: Balances smaller than this are not worth a finding.
+PEER_MIN_BALANCE = Decimal(50_000_000)               # ৳5 crore
+PEER_SERIOUS_BALANCE = Decimal(500_000_000)          # ৳50 crore
+#: A deposit paying this far under the private banks' median is exposed.
+PEER_DEPOSIT_GAP = Decimal("-0.75")
+#: A loan this far from the market's median is mispriced one way or the other.
+PEER_LOAN_GAP = Decimal("1.00")
+_PEER = {"label": "Bangladesh Bank, bank-wise interest rates",
+         "url": "https://www.bb.org.bd/en/index.php/financialactivity/interestdeposit"}
+
+
+def _month_of(d: date | None) -> str:
+    return f"{d:%B %Y}" if d else "the latest month"
+
+
+def peer_pricing(fs: FactSheet) -> list[Finding]:
+    out = []
+    for g in fs.peer_gaps:
+        if g.balance < PEER_MIN_BALANCE:
+            continue
+        ref = g.pcb_median if g.pcb_median is not None else g.market_median
+        gap = (g.our_rate - ref).quantize(_Q2)
+        ev = (_ev("Our customer rate", g.our_rate, "pct"),
+              _ev("Private banks' median", g.pcb_median, "pct"),
+              _ev("All banks' median", g.market_median, "pct"),
+              _ev("Market's middle half", f"{pct(g.p25)}–{pct(g.p75)}", "text"),
+              _ev("Balance", g.balance, "bdt"))
+        if g.side == "LIABILITY":
+            if gap > PEER_DEPOSIT_GAP and (g.p25 is None or g.our_rate >= g.p25):
+                continue
+            cost = (g.balance * (ref - g.our_rate) / 100 * _DAYS_PER_MONTH).quantize(Decimal(1))
+            below_most = g.p25 is not None and g.our_rate < g.p25
+            sev = "serious" if (below_most and g.balance >= PEER_SERIOUS_BALANCE) else "warning"
+            out.append(Finding(
+                kind="peer_deposit_rate", subject=g.product_code, severity=sev,
+                title=(f"{{PRD:{g.product_code}}} pays {abs(bp(gap))} bp under the private banks "
+                       f"({taka(g.balance)} exposed)"),
+                body=(f"Customers get {pct(g.our_rate)} on {taka(g.balance)}; private banks post a "
+                      f"median {pct(ref)} for {g.peer_label.lower()} ({_month_of(g.month)})"
+                      + (", and we are below three-quarters of all banks" if below_most else "")
+                      + f". Depositors who shop around can move. Matching the median would cost "
+                        f"about {taka(cost)} a month; losing the balance would cost its funding."),
+                money_at_stake=cost, money_basis="a month, to pay the private banks' median",
+                evidence=ev, sources=(_PEER, _BOOK)))
+        else:
+            if abs(gap) < PEER_LOAN_GAP:
+                continue
+            if gap > 0:
+                above_most = g.p75 is not None and g.our_rate > g.p75
+                premium = (g.balance * gap / 100 * _DAYS_PER_MONTH).quantize(Decimal(1))
+                out.append(Finding(
+                    kind="peer_loan_rate_high", subject=g.product_code,
+                    severity="warning" if above_most else "info",
+                    title=(f"{{PRD:{g.product_code}}} is priced {bp(gap)} bp above the private "
+                           f"banks ({taka(g.balance)} exposed)"),
+                    body=(f"Borrowers pay {pct(g.our_rate)} on {taka(g.balance)}; private banks "
+                          f"post a median {pct(ref)} for {g.peer_label.lower()} "
+                          f"({_month_of(g.month)}). Good borrowers can refinance elsewhere."),
+                    money_at_stake=premium,
+                    money_basis="a month of premium over market pricing, at risk",
+                    evidence=ev, sources=(_PEER, _BOOK)))
+            else:
+                lost = (g.balance * (ref - g.our_rate) / 100 * _DAYS_PER_MONTH).quantize(Decimal(1))
+                out.append(Finding(
+                    kind="peer_loan_rate_low", subject=g.product_code, severity="warning",
+                    title=f"{{PRD:{g.product_code}}} is priced {abs(bp(gap))} bp under the market",
+                    body=(f"Borrowers pay {pct(g.our_rate)} on {taka(g.balance)}; private banks "
+                          f"post a median {pct(ref)} for {g.peer_label.lower()} "
+                          f"({_month_of(g.month)}). Pricing new and renewing loans nearer the "
+                          f"market would earn about {taka(lost)} a month more."),
+                    money_at_stake=lost, money_basis="per month",
+                    evidence=ev, sources=(_PEER, _BOOK)))
+    return out
+
+
+# --- 10. where the month is heading ----------------------------------------------- #
+
+LANDING_DEPOSIT_DROP = Decimal("-2")          # % by month-end
+
+
+def landing(fs: FactSheet) -> list[Finding]:
+    out = []
+    np_ = fs.landings.get("net_ftp_profit")
+    if np_ and np_.previous_month:
+        prev = np_.previous_month
+        if np_.p90 < prev:
+            short = prev - np_.p50
+            out.append(Finding(
+                kind="landing_profit", subject="", severity="warning" if np_.p90 < prev * Decimal(
+                    "0.95") else "info",
+                title=f"FTP profit on course to finish {_month_of(np_.month_end)} below last month",
+                body=(f"So far {taka(np_.so_far)}. The forecast for the month is {taka(np_.p50)} "
+                      f"(likely range {taka(np_.p10)}–{taka(np_.p90)}), against {taka(prev)} last "
+                      f"month. Confidence: {np_.confidence}."),
+                money_at_stake=short, money_basis="short of last month",
+                evidence=(_ev("Forecast", np_.p50, "bdt"), _ev("Low", np_.p10, "bdt"),
+                          _ev("High", np_.p90, "bdt"), _ev("Last month", prev, "bdt")),
+                sources=(_BOOK,)))
+        elif np_.p10 > prev:
+            out.append(Finding(
+                kind="landing_profit", subject="", severity="info",
+                title=f"FTP profit on course to beat last month",
+                body=(f"The forecast for {_month_of(np_.month_end)} is {taka(np_.p50)} "
+                      f"(likely range {taka(np_.p10)}–{taka(np_.p90)}), against {taka(prev)} "
+                      f"last month."),
+                money_at_stake=np_.p50 - prev, money_basis="above last month",
+                evidence=(_ev("Forecast", np_.p50, "bdt"), _ev("Last month", prev, "bdt")),
+                sources=(_BOOK,)))
+    dep = fs.landings.get("deposits")
+    if dep and dep.last:
+        move = (dep.p50 - dep.last) / dep.last * 100
+        if move <= LANDING_DEPOSIT_DROP and dep.month_end > (fs.business_date or dep.month_end):
+            out.append(Finding(
+                kind="landing_deposits", subject="", severity="warning",
+                title=f"Deposits heading {abs(move):.1f}% lower by {dep.month_end:%d %b}",
+                body=(f"Today {taka(dep.last)}; the month-end forecast is {taka(dep.p50)} "
+                      f"(likely range {taka(dep.p10)}–{taka(dep.p90)}). Confidence: "
+                      f"{dep.confidence}."),
+                money_at_stake=dep.last - dep.p50, money_basis="by month-end",
+                evidence=(_ev("Today", dep.last, "bdt"), _ev("Month-end forecast", dep.p50, "bdt")),
+                sources=(_BOOK,)))
+    return out
+
+
+# --- 11. the next policy meeting (public) ----------------------------------------- #
+
+def policy_outlook(fs: FactSheet) -> list[Finding]:
+    p = fs.policy
+    if p is None or p.next_meeting is None:
+        return []
+    side = max(("hike", "cut"), key=lambda k: p.odds.get(k, 0))
+    if p.leaning == "hold" and p.odds.get(side, 0) < 30:
+        return []
+    when = f"{p.next_meeting:%d %b}"
+    lean = (f"lean towards a {p.leaning}" if p.leaning != "hold"
+            else f"lean to a hold, with a {side} the main risk")
+    return [Finding(
+        kind="policy_outlook", subject=p.next_meeting.isoformat(),
+        severity="warning" if p.leaning != "hold" else "info",
+        title=f"Next MPC (about {when}): signals {lean}",
+        body=(f"Repo is {pct(p.repo)}. Signals: hike {p.odds.get('hike', 0)}%, hold "
+              f"{p.odds.get('hold', 0)}%, cut {p.odds.get('cut', 0)}% -- a summary of the "
+              f"signals, not a market price. " + " ".join(p.top)),
+        audience="PUBLIC",
+        evidence=tuple(_ev(k.title(), f"{v}%", "text") for k, v in p.odds.items()),
+        sources=(_BB, {"label": "IMF World Economic Outlook",
+                       "url": "https://www.imf.org/external/datamapper"})),
+    ]
+
+
 # --- running them ------------------------------------------------------------ #
 
 def _window_words(fs: FactSheet) -> str:
@@ -520,9 +672,9 @@ def _drivers(fs: FactSheet) -> str:
     return (f"Mostly {main}: volume {taka(vol)}, rate {taka(rate)}.")
 
 
-BOOK_DETECTORS = (data_freshness, margin, deposits, profit, branch_movers)
-HO_DETECTORS = (benchmark_drift,)
-PUBLIC_DETECTORS = (policy_rate, market_moves, policy_news, stale_curve)
+BOOK_DETECTORS = (data_freshness, margin, deposits, profit, branch_movers, landing)
+HO_DETECTORS = (benchmark_drift, peer_pricing)
+PUBLIC_DETECTORS = (policy_rate, market_moves, policy_news, stale_curve, policy_outlook)
 
 
 def run(fs: FactSheet, *, include_public: bool, head_office: bool) -> list[Finding]:

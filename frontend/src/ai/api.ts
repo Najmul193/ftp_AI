@@ -406,3 +406,80 @@ export interface UploadReview {
 export const uploadCheckApi = {
   review: (batchRef: string) => request<UploadReview>(`/ai/uploads/${encodeURIComponent(batchRef)}/review`),
 };
+
+// --- Outlook: forecasts, the policy rate, the market's posted rates -----------
+
+export interface Band { date: string; p10: number; p50: number; p90: number }
+export interface Point { date: string; value: number }
+
+export interface MarketForecast {
+  code: string; name: string; short: string; unit: string; category: string;
+  last: Point; history: Point[]; forecast: Band[]; in_30d: Band | null; in_90d: Band | null;
+  confidence: "high" | "medium" | "low"; confidence_reason: string; notes: string[];
+  spacing_days: number; points: number; bounded_by: string | null;
+  backtest: { mae: number | null; mape: number | null; coverage: number | null; horizon_steps: number };
+}
+
+export interface PolicyDriver {
+  key: string; label: string; value: string; score: number; weight: number; push: number; explain: string;
+}
+
+export interface PolicyOutlook {
+  leaning: "hike" | "hold" | "cut"; score: number; odds: { hike: number; hold: number; cut: number };
+  repo: number | null; next_meeting: string | null; next_meeting_basis: string;
+  implied_91d_in_9m: number | null; missing: string[]; drivers: PolicyDriver[]; note: string;
+}
+
+export interface BookMetric {
+  metric: string; label: string; unit: "bdt" | "pct"; kind: "stock" | "flow" | "rate";
+  history: Point[]; forecast: Band[]; last: Point;
+  confidence: "high" | "medium" | "low"; confidence_reason: string; notes: string[]; points: number;
+  backtest: { mae: number | null; mape: number | null; coverage: number | null };
+  month: (Partial<Band> & { end?: string; so_far?: number; previous_month?: number | null }) | null;
+  quarter: (Partial<Band> & { end?: string; so_far?: number }) | null;
+  in_90d?: Band | null;
+}
+
+export interface BookOutlook {
+  available: boolean; reason?: string; latest: string; month_end: string; quarter_end: string;
+  horizon_end: string; label: string; days_of_history: number; metrics: BookMetric[];
+}
+
+export interface PeerRow {
+  product_code: string; name: string; side: "ASSET" | "LIABILITY"; peer_book: string;
+  peer_product: string; peer_label: string; our_rate: number; market_median: number;
+  pcb_median: number | null; p25: number | null; p75: number | null; gap: number; balance: number;
+  self_posted: number | null; month: string | null; as_of: string;
+}
+
+export interface PeerTable {
+  month: string | null; book: string; self_bank: string; collected: string | null;
+  products: { product: string; label: string; banks: number; median: number | null; p25: number | null;
+              p75: number | null; min: number | null; max: number | null; self: number | null;
+              rank: number | null; pcb_median: number | null; self_range: [number, number] | null }[];
+  banks: { bank: string; group: string; rates: Record<string, number | null> }[];
+}
+
+export interface MacroSeries {
+  code: string; name: string; unit: string;
+  actual: { year: number; value: number }[]; projection: { year: number; value: number }[];
+}
+
+export interface TrackRecord {
+  summary: { scored: number; inside_band: number; hit_rate: number | null; pending: number };
+  items: { scope: string; target: string; target_date: string; made_on: string; unit: string;
+           p10: number; p50: number; p90: number; actual: number | null; inside: boolean | null;
+           error: number | null; confidence: string }[];
+}
+
+export const outlookApi = {
+  market: () => request<{ series: MarketForecast[]; horizon_days: number }>("/ai/outlook/market"),
+  policy: () => request<PolicyOutlook>("/ai/outlook/policy"),
+  book: (branch?: string) =>
+    request<BookOutlook>(`/ai/outlook/book${branch ? `?branch=${encodeURIComponent(branch)}` : ""}`),
+  trackRecord: () => request<TrackRecord>("/ai/outlook/track-record"),
+  bookVsPeers: () => request<{ items: PeerRow[]; self_bank: string }>("/ai/public/book-vs-peers"),
+  peers: (book: "deposit" | "lending") => request<PeerTable>(`/ai/public/peers?book=${book}`),
+  macro: () => request<{ series: MacroSeries[]; last_mpc: string | null }>("/ai/public/macro"),
+  refreshPublic: () => request<Record<string, unknown>>("/ai/public/refresh", { method: "POST" }),
+};
