@@ -8,6 +8,7 @@ keep the record readable.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -56,6 +57,9 @@ def run_job(job: str, trigger: str = "schedule", **kwargs) -> dict:
             if job in ("market_bb", "public_data") and trigger == "manual":
                 kwargs.setdefault("manual", True)
             detail = _RUNNERS[job](db, **kwargs)
+            # Dates and Decimals in a job's report stored as text: the run
+            # record is JSON, and a report must never fail its own job.
+            detail = json.loads(json.dumps(detail, default=str))
             run.status = ("blocked" if detail.get("blocked")
                           else "skipped" if detail.get("skipped")
                           else "partial" if detail.get("errors") else "ok")

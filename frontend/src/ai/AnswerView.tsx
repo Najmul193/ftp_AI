@@ -3,6 +3,7 @@ import Chart, { axisCommon, baseOption, useTokens } from "../components/Chart";
 import { Table } from "../components/ui";
 import { compact, shortDate } from "../format";
 import { AskResult, ResultColumn, taka } from "./api";
+import Cone from "./Cone";
 
 type Row = Record<string, string | number | null>;
 
@@ -11,8 +12,8 @@ const num = (v: unknown) => (v == null || v === "" ? null : Number(v));
 /** A cell as a person reads it. Exact values; the chart may abbreviate. */
 export function cell(v: unknown, unit: string, row?: Row): string {
   if (v == null || v === "") return "—";
-  if (unit === "mixed") unit = row?.unit === "pct" ? "pct" : "num";
-  if (unit === "mixed_change") unit = row?.unit === "pct" ? "pp" : "num";
+  if (unit === "mixed") unit = row?.unit === "pct" ? "pct" : row?.unit === "bdt" ? "bdt" : "num";
+  if (unit === "mixed_change") unit = row?.unit === "pct" ? "pp" : row?.unit === "bdt" ? "bdt" : "num";
   const n = Number(v);
   switch (unit) {
     case "bdt": return taka(n);
@@ -76,7 +77,10 @@ export default function AnswerView({ r, compact: small = false }: { r: AskResult
   const hideTable = small && r.chart != null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {r.chart && r.rows.length > 0 && <ResultChart r={r} height={small ? 180 : 240} />}
+      {r.chart?.type === "cone" && r.chart.history && r.chart.forecast
+        ? <Cone history={r.chart.history} forecast={r.chart.forecast} unit={r.chart.unit ?? "num"}
+                height={small ? 160 : 200} ariaLabel={`${r.title}: history and forecast`} />
+        : r.chart && r.rows.length > 0 && <ResultChart r={r} height={small ? 180 : 240} />}
       {!hideTable && (
         <Table<Row> rows={tableRows} maxHeight={small ? 220 : 320}
           csvName={small ? undefined : `${r.title.replace(/[^\w]+/g, "-").toLowerCase()}.csv`}
@@ -89,6 +93,8 @@ export default function AnswerView({ r, compact: small = false }: { r: AskResult
                                               whiteSpace: c.unit === "text" ? "normal" : "nowrap" }}>
                 {cell(x[c.key], c.unit, x)}</span>),
           }))} />)}
+      {r.link && !small && (
+        <a href={r.link.href} style={{ fontSize: "var(--fs-sm)", fontWeight: 600 }}>{r.link.label} →</a>)}
       {r.notes.length > 0 && (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>
           {r.notes.map((n) => <li key={n}>{n}</li>)}

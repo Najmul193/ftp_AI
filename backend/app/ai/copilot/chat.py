@@ -58,6 +58,8 @@ class Asker:
     level: ScopeLevel
     scope_id: int | None
     scope: ScopeFilter
+    #: May run what-if scenarios (SCENARIO_RUN).
+    can_scenario: bool = False
 
     @property
     def caller(self) -> Caller:
@@ -192,6 +194,33 @@ def resolve(db: Session, plan: Plan, vault: Vault) -> tools.Where:
     return tools.Where(tuple(codes), div_id, dist, tuple(prods), plan.side, plan.category)
 
 
+def resolve_scenario(db: Session, plan: Plan, vault: Vault) -> Plan:
+    """A scenario's products named the way the model saw them -- a name, a
+    token -- back to product codes, as `resolve` does for a plan's filters."""
+    if plan.tool != "scenario" or not plan.scenario:
+        return plan
+    by_name = {p.short_name.lower(): p.product_code for p in db.scalars(select(Product))}
+    codes = set(by_name.values())
+
+    def code(k: str) -> str:
+        k = str(k).strip().strip('"')
+        if k in codes:
+            return k
+        e = vault.entity(k)
+        if e is not None and e.kind == "PRD":
+            return e.key
+        hit = by_name.get(k.lower())
+        if hit:
+            return hit
+        raise PlanError(f"no product matches {k!r}")
+
+    sc = dict(plan.scenario)
+    for field_ in ("product_rate_bp", "product_bench_bp"):
+        if isinstance(sc.get(field_), dict):
+            sc[field_] = {code(k): v for k, v in sc[field_].items()}
+    return dataclass_replace(plan, scenario=sc)
+
+
 # --- prompts -------------------------------------------------------------------- #
 
 def _narrator_system(lang: str, explain: bool) -> str:
@@ -205,7 +234,7 @@ def _narrator_system(lang: str, explain: bool) -> str:
         "The platform ran a query; its table and chart are shown beside your answer. Explain "
         "the result.\nRules:\n"
         "- Use only numbers that appear in RESULT, written the same way (you may round a rate). "
-        "Amounts are BDT crore: say 'crore'. Never compute new figures.\n"
+        "Amounts are BDT, marked cr (crore) or lakh: keep the unit as given. Never compute new figures.\n"
         "- Tokens like BR_K7Q, DIV_2MX, DIST_4TA, PRD_9QX stand for names you are not shown. "
         "Copy them exactly; never guess what they are.\n"
         "- Lead with the direct answer in one sentence, then at most three short sentences or "
@@ -403,6 +432,16 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         if not state.enabled:
             yield {"type": "error", "code": "ai_disabled", "text": "AI features are switched off."}
             return
+        if preset is None:
+            from app.ai.copilot import agent     # it builds on this module
+            multi = agent.use_agent(db)
+        else:
+            multi = False
+    if multi:
+        yield from agent.ask(a, question, conversation_id, lang, context)
+        return
+    with session_scope() as db:
+        state = svc.state(db)
         if _count_last_hour(db, a.user_id) >= MAX_PER_HOUR:
             yield {"type": "error", "code": "rate_limited",
                    "text": f"That is {MAX_PER_HOUR} questions in the last hour; try again shortly."}
@@ -510,6 +549,7 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         if plan.tool != "explain":
             try:
                 where = preset_where if preset_where is not None else resolve(db, plan, vault)
+                plan = resolve_scenario(db, plan, vault)
                 if preset_where is None and page is not None and plan.tool in ("compare", "trend", "why"):
                     where, used = merge_where(where, page.where)
                     if page.date_from and page.date_to and not plan.period_set:
@@ -528,7 +568,7 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
             yield {"type": "status", "text": "Running the query"}
             try:
                 res = tools.execute(db, a.scope, plan, where, head_office=a.level is ScopeLevel.HO,
-                                    reader=a.reader, names=names)
+                                    reader=a.reader, names=names, can_scenario=a.can_scenario)
             except ScopeViolation:
                 msg.status = "refused"
                 msg.answer = ("That is outside the part of the bank you can see, so it was not "
@@ -598,6 +638,9 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         msg.status = "ok"
         finish()
         yield answer
+        if plan.tool != "explain":
+            from app.ai.copilot.agent import followups
+            yield {"type": "followups", "items": followups([plan.tool], question)}
         yield {"type": "done", "message_id": msg.id,
                "pinnable": res is not None and plan.tool in ("compare", "trend", "why",
                                                                "market", "benchmarks")}

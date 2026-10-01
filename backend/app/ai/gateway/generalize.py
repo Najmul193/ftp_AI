@@ -45,9 +45,17 @@ def _plain(d: Decimal) -> str:
     return s or "0"
 
 
+LAKH = Decimal(100_000)
+
+
 def crore(amount: Decimal | float | int, digits: int = 3) -> str:
-    """BDT amount as `N cr` to `digits` significant figures."""
-    return f"{_plain(sig(Decimal(str(amount)) / CRORE, digits))} cr"
+    """BDT amount as `N cr` to `digits` significant figures -- or `N lakh`
+    under one crore, where "0.00654 cr" would be unreadable. Either way three
+    significant figures: no more exact, no more a fingerprint."""
+    a = Decimal(str(amount))
+    if a and abs(a) < CRORE:
+        return f"{_plain(sig(a / LAKH, digits))} lakh"
+    return f"{_plain(sig(a / CRORE, digits))} cr"
 
 
 def crore_value(amount: Decimal | float | int, digits: int = 3) -> Decimal:

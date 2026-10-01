@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Card, Empty, Grid, MiniButton, Pill, Table } from "../components/ui";
 import { compact, longDate, shortDate } from "../format";
-import { useApp, useAsync } from "../state";
+import { useAsync } from "../state";
 import Cone, { fmtUnit } from "./Cone";
 import { BookMetric, MarketForecast, outlookApi, PeerRow, PolicyOutlook } from "./api";
 
@@ -21,13 +21,11 @@ const days = (iso: string | null) =>
   iso ? Math.round((new Date(`${iso}T00:00:00`).getTime() - Date.now()) / 86400000) : null;
 
 export default function Outlook() {
-  const { me } = useApp();
-  const ho = me?.scope_level === "HO";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <PolicyCard />
       <BookCard />
-      {ho && <PeerCard />}
+      <PeerCard />
       <MarketCard />
       <TrackCard />
     </div>
@@ -202,7 +200,7 @@ function PeerCard() {
     return { t: "In line", tone: "good" as const };
   };
   return (
-    <Card title="Our pricing against the market"
+    <Card title={`Our pricing against the market${r.data.label && r.data.label !== "Whole bank" ? ` · ${r.data.label}` : ""}`}
           subtitle={`What our customers actually get (from the book) against every bank's posted rate for the like product${month ? `, ${new Date(`${month}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}` : ""}. Private commercial banks are the closest competitors.`}
           footnote="Source: Bangladesh Bank, bank-wise deposit and lending rates. Each product is matched to the table's nearest line by its name and term — an inference, shown in the 'Compared with' column.">
       <Table<PeerRow> rows={rows} csvName="pricing-vs-market" cols={[

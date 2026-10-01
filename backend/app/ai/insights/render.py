@@ -122,7 +122,7 @@ def render(fs: FactSheet, findings: list[Finding], vault: Vault,
     if fs.business_date is not None:
         scope = ("the whole bank" if fs.scope_key == "HO"
                  else f"one division of the bank ({resolve('DIV', fs.scope_key.split(':', 1)[1])})")
-        bank.append(f"SCOPE: {scope}. Amounts in BDT crore, 3 significant figures.")
+        bank.append(f"SCOPE: {scope}. Amounts in BDT crore (cr) or lakh as marked, 3 significant figures.")
         bank.append(f"BANK DATA TO: {fs.business_date.isoformat()} "
                     f"({fs.data_lag_days} days before today)")
         if fs.window and fs.prior_window:

@@ -51,6 +51,8 @@ class Result:
     #: What the figures show, in words written by code: shown above whatever a
     #: model writes, so a reader sees the true direction first.
     facts: list[str] = field(default_factory=list)
+    #: Where the full view of this answer lives: {"label", "href"}.
+    link: dict | None = None
 
     def to_json(self, names: dict[str, str]) -> dict:
         def clean(r: dict) -> dict:
@@ -63,7 +65,7 @@ class Result:
             "period": {k: (v.isoformat() if hasattr(v, "isoformat") else v)
                        for k, v in (self.period or {}).items()},
             "chart": self.chart, "notes": [fill_names(n, names) for n in self.notes],
-            "facts": self.facts,
+            "facts": self.facts, "link": self.link,
         }
 
 
@@ -102,6 +104,10 @@ def compute(meas: dict, days: int) -> dict[str, Decimal | None]:
         "nim": ann(rec - pay, a_pd),
         "spread": (yoa - cod) if yoa is not None and cod is not None else None,
         "ftp_yield": ann(_d(meas.get("net_ftp_profit")), t_pd),
+        # Counts summed over days, so a day's average is the count a reader means.
+        "accounts": (_d(meas.get("account_count")) / days).quantize(Decimal(1)) if days else None,
+        "loss_making_accounts": (_d(meas.get("negative_ftp_count")) / days).quantize(Decimal(1))
+        if days else None,
     }
 
 
@@ -203,6 +209,8 @@ def _val(v, unit: str) -> str:
         return f"{'+' if b > 0 else ''}{b} bp"
     if unit == "num":
         return f"{Decimal(str(v)):.2f}"
+    if unit == "count":
+        return f"{int(Decimal(str(v))):,}"
     return str(v)
 
 
@@ -219,7 +227,7 @@ def masked_text(res: Result, resolve: Callable[[str, str], str], *, max_rows: in
         if p.get("prior_start"):
             line += f", compared with {p['prior_start']} to {p['prior_end']}"
         out.append(line)
-    out.append("Amounts in BDT crore (3 significant figures); rates in % a year.")
+    out.append("Amounts in BDT, cr (crore) or lakh as marked, 3 significant figures; rates in % a year.")
     cols = [c for c in res.columns if c.key != "label"]
 
     def row_text(r: dict) -> str:
@@ -229,7 +237,8 @@ def masked_text(res: Result, resolve: Callable[[str, str], str], *, max_rows: in
             if c.unit == "mixed":
                 return r.get("unit", "num")
             if c.unit == "mixed_change":
-                return "pp" if r.get("unit") == "pct" else "num"
+                # An amount's change is an amount: it leaves as crore, never exact.
+                return "pp" if r.get("unit") == "pct" else "bdt" if r.get("unit") == "bdt" else "num"
             return c.unit
         parts = [f"{c.label} {_val(r.get(c.key), unit(c))}" for c in cols if c.unit != "text"]
         texts = [f"{c.label} {r.get(c.key)}" for c in cols if c.unit == "text" and r.get(c.key)]

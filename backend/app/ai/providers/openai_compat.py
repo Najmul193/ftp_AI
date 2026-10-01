@@ -37,6 +37,23 @@ _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 _sleep = time.sleep
 
 
+def _embedded_status(r: httpx.Response) -> int | None:
+    """The status in a 200 response whose body is an error and no answer."""
+    if r.status_code != 200:
+        return None
+    try:
+        d = r.json()
+    except ValueError:
+        return None
+    if not isinstance(d, dict) or "choices" in d or not isinstance(d.get("error"), dict):
+        return None
+    try:
+        code = int(d["error"].get("code") or 502)
+    except (TypeError, ValueError):
+        code = 502
+    return code if 400 <= code < 600 else 502
+
+
 def _retry_after(r: httpx.Response) -> float | None:
     try:
         return float(r.headers.get("retry-after", ""))
@@ -85,6 +102,18 @@ class OpenAICompatProvider:
                 if wait is None or wait <= MAX_RETRY_AFTER:
                     _sleep(max(wait or 0.0, RETRY_WAITS[attempt]))
                     continue
+            # OpenRouter reports an upstream failure ("Upstream error from
+            # Nvidia: Service temporarily overloaded") as 200 with an error
+            # body: read it as the status it names, so it is retried and
+            # explained rather than taken for a garbled reply.
+            embedded = _embedded_status(r)
+            if embedded is not None:
+                # The body is already decoded: carry it, not its encoding headers.
+                r = httpx.Response(embedded, content=r.content, request=r.request,
+                                   headers={"content-type": "application/json"})
+                if embedded in _RETRY_STATUS and not last:
+                    _sleep(RETRY_WAITS[attempt])
+                    continue
             break
         if r.status_code >= 400:
             err = _classify(r)
@@ -115,6 +144,11 @@ class OpenAICompatProvider:
             "low" if "gpt-oss" in self.model.lower() else None)
         if effort:
             body["reasoning_effort"] = effort
+        if self.brand == "openrouter":
+            # OpenRouter's own switch. Some reasoning models it routes to
+            # (NVIDIA Nemotron) otherwise write their thinking into the answer
+            # itself, spending the whole allowance before the reply begins.
+            body["reasoning"] = {"enabled": False}
         limit = max_tokens + THINKING_HEADROOM.get(self.brand, 0)
 
         for attempt in range(2):
@@ -124,9 +158,12 @@ class OpenAICompatProvider:
             except ProviderError as exc:
                 low = exc.message.lower()
                 # A model that does not take this thinking level: once, without it.
-                if exc.code == "bad_request" and "reasoning_effort" in body and \
-                        any(w in low for w in ("thinking", "reasoning")):
-                    del body["reasoning_effort"]
+                if exc.code == "bad_request" and ("reasoning_effort" in body or "reasoning" in body) \
+                        and any(w in low for w in ("thinking", "reasoning")):
+                    # A model that cannot switch thinking off: think a little.
+                    body.pop("reasoning_effort", None)
+                    if "reasoning" in body:
+                        body["reasoning"] = {"effort": "low"}
                     data = self._call("POST", "/chat/completions", json=body)
                 # Strict JSON mode (Groq) rejects a reply that is not perfectly
                 # valid JSON. The caller extracts and validates the JSON itself,

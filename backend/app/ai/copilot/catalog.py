@@ -42,13 +42,23 @@ METRICS: dict[str, Metric] = {
                   "interest earned minus paid, over loans, % a year"),
     "spread": Metric("Gross spread", "pct", "rate", "yield on advances minus cost of deposits"),
     "ftp_yield": Metric("FTP yield", "pct", "rate", "net FTP profit over all balances, % a year"),
+    "accounts": Metric("Accounts", "count", "stock", "number of accounts, average per day"),
+    "loss_making_accounts": Metric("Loss-making accounts", "count", "stock",
+                                   "accounts with a negative FTP rate, average per day"),
 }
 
 PROFIT_METRICS = ("net_ftp_profit", "lending_ftp_profit", "deposit_ftp_profit")
 DIMENSIONS = ("total", "branch", "product", "division", "district", "category")
 PERIODS = ("latest_day", "last_7_days", "last_30_days", "this_month", "last_month", "all", "custom")
 CHARTS = ("bar", "line", "none")
-TOOLS = ("compare", "trend", "why", "market", "benchmarks", "insights", "explain", "clarify")
+TOOLS = ("compare", "trend", "why", "market", "benchmarks", "insights", "explain", "clarify",
+         "forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare")
+#: Tools that look ahead or outside the bank; run by `copilot.tools_intel`.
+INTEL_TOOLS = ("forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare")
+FORECAST_METRICS = ("deposits", "advances", "net_ftp_profit", "cost_of_deposits",
+                    "yield_on_advances", "nim")
+FORECAST_CODES = ("BB_CALL_ON", "BB_TBILL_91", "BB_TBILL_364", "BB_TBOND_5Y", "FX_USDBDT",
+                  "BD_IND_DEPOSIT", "BD_IND_ADVANCE", "US_FEDFUNDS", "US_UST_10Y", "BRENT")
 OPS = ("gt", "lt", "change_gt", "change_lt")
 SIDES = ("ASSET", "LIABILITY")
 CATEGORIES = ("URBAN", "SEMI_URBAN", "RURAL")
@@ -93,6 +103,8 @@ class Plan:
     message: str = ""
     #: The question (or plan) chose its own period; a page's dates do not apply.
     period_set: bool = False
+    #: For scenario: the what-if's settings, checked when it runs.
+    scenario: dict | None = None
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()}
@@ -165,6 +177,8 @@ def parse_plan(raw: str | dict) -> Plan:
         raise PlanError(f"unknown tool {tool!r}")
     if tool in ("clarify", "explain"):
         return Plan(tool=tool, message=_str(d.get("message"), 400) or "", title=_str(d.get("title")) or "")
+    if tool in INTEL_TOOLS:
+        return _intel_plan(tool, d)
 
     metrics = tuple(m for m in _list(d.get("metrics")) if m in METRICS) or ("net_ftp_profit",)
     by = _str(d.get("by"), 20) or ("total" if tool != "why" else "product")
@@ -243,6 +257,31 @@ def parse_plan(raw: str | dict) -> Plan:
                 sort=sort, order=order, limit=limit, chart=chart, codes=codes,
                 title=_str(d.get("title"), 90) or "",
                 period_set=bool(d.get("period") or d.get("date_from") or d.get("date_to")))
+
+
+def _intel_plan(tool: str, d: dict) -> Plan:
+    title = _str(d.get("title"), 90) or ""
+    if tool == "forecast":
+        metrics = tuple(m for m in _list(d.get("metrics")) if m in FORECAST_METRICS) \
+            or ("net_ftp_profit", "deposits")
+        return Plan(tool=tool, metrics=metrics[:4], branches=_list(d.get("branches"))[:1],
+                    title=title, chart="line")
+    if tool == "market_forecast":
+        codes = tuple(c.upper() for c in _list(d.get("codes")) if c.upper() in FORECAST_CODES) \
+            or ("BB_CALL_ON",)
+        return Plan(tool=tool, codes=codes[:6], title=title, chart="line")
+    if tool == "scenario":
+        sc = d.get("scenario")
+        if sc is None:
+            sc = {k: v for k, v in d.items() if k not in ("tool", "title", "thought")}
+        if not isinstance(sc, dict):
+            raise PlanError("a scenario must be an object of settings")
+        return Plan(tool=tool, scenario=sc, title=title, chart="bar")
+    side = _str(d.get("side"), 10)
+    side = side.upper() if side else None
+    if side is not None and side not in SIDES:
+        raise PlanError(f"unknown side {side!r}")
+    return Plan(tool=tool, side=side, title=title, chart="none" if tool == "policy_outlook" else "bar")
 
 
 def window(p: Plan, latest: date, earliest: date) -> tuple[date, date]:
@@ -342,6 +381,11 @@ Reply with a single JSON object, no prose. Fields:
     "market"     market rates and prices (codes below)
     "benchmarks" the bank's FTP benchmark rates against the market curve, product by product
     "insights"   the platform's current alerts and findings
+    "forecast"   where the book is heading: month-end, quarter-end and 90 days ahead, with a likely range (metrics from: {", ".join(FORECAST_METRICS)}; one branch token optional)
+    "market_forecast"  market rates 90 days ahead with a likely range (codes from: {", ".join(FORECAST_CODES)})
+    "policy_outlook"   which way Bangladesh Bank's policy rate leans at the next MPC meeting, and why
+    "scenario"   a what-if: put the settings in "scenario": {{"market_bp": move in bp, "deposit_pass": 0..1, "loan_pass": 0..1, "competitor_bp": other banks' deposit rates move, "deposit_growth_pct", "loan_growth_pct", "horizon_months", "product_rate_bp": {{"PRODUCT_CODE": bp}}}}; omit what the question does not set
+    "peer_compare"  our product rates against other banks' posted rates (Bangladesh Bank's bank-wise tables); side optional
     "explain"    a concept question needing no data ("what is FTP?"); put nothing else
     "clarify"    the question is ambiguous or impossible; put your question to the user in "message"
   metrics: list of up to 4 of
@@ -368,6 +412,7 @@ Rules:
 - "Rose/fell/changed/grew" needs compare: true, and "rose by more than X" is a change_gt condition.
 - "Top/best/worst N" is sort + order + limit. "Loans" means side ASSET, "deposits" side LIABILITY.
 - Periods are relative to the latest business date given below, not to today.
+- Questions about the future ("will", "by month-end", "next quarter", "expect") use "forecast", "market_forecast" or "policy_outlook"; "what if" questions use "scenario".
 - Prefer "compare" when unsure. Use "clarify" only when no sensible plan exists.
 
 Examples:
@@ -381,5 +426,13 @@ Q: how has NIM moved over the last month?
 {{"tool":"trend","metrics":["nim"],"period":"last_30_days","chart":"line","title":"Net interest margin, daily"}}
 Q: why did profit fall this week?
 {{"tool":"why","by":"product","period":"last_7_days","chart":"bar","title":"What moved FTP profit"}}
+Q: will we beat last month's profit?
+{{"tool":"forecast","metrics":["net_ftp_profit"],"title":"This month's FTP profit, forecast"}}
+Q: will Bangladesh Bank cut rates?
+{{"tool":"policy_outlook","title":"The next MPC meeting"}}
+Q: what happens to our NII if BB hikes 50 bp?
+{{"tool":"scenario","scenario":{{"market_bp":50}},"title":"A 50 bp hike"}}
+Q: are our term deposit rates competitive?
+{{"tool":"peer_compare","side":"LIABILITY","title":"Our deposit rates against other banks"}}
 Q: where is the call money rate?
 {{"tool":"market","codes":["BB_CALL_ON","BB_DOMMR_1M"],"chart":"none","title":"Call money"}}"""

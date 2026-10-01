@@ -218,7 +218,7 @@ _SYSTEM = (
     "estimate or invent a figure.\n"
     "Rules:\n"
     "- Every number you write must appear in the facts, written the same way (you may round "
-    "a rate to fewer decimals). Amounts are in BDT crore: say 'crore'. Write dates as they "
+    "a rate to fewer decimals). Amounts are BDT, marked cr (crore) or lakh: keep the unit as given. Write dates as they "
     "appear or as '23 Sep'.\n"
     "- Identifiers like BR_K7Q, DIV_2MX, PRD_4TA are opaque tokens for real names you are not "
     "shown. Copy them exactly; never guess what they stand for.\n"

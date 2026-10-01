@@ -280,8 +280,10 @@ export interface ResultColumn {
 }
 
 export interface ChartSpec {
-  type: "bar" | "line"; x: string; horizontal?: boolean; stack?: boolean;
+  type: "bar" | "line" | "cone"; x: string; horizontal?: boolean; stack?: boolean;
   series: ResultColumn[];
+  /** For a cone: the history and the forecast band. */
+  unit?: string; history?: Point[]; forecast?: Band[];
 }
 
 export interface AskResult {
@@ -291,17 +293,24 @@ export interface AskResult {
   period: Record<string, string> | null; chart: ChartSpec | null; notes: string[];
   /** Which way each row moved, in words written by code (not by the model). */
   facts?: string[];
+  /** The page that shows this in full. */
+  link?: { label: string; href: string } | null;
+  /** A multi-step answer, as stored: every step's result. */
+  steps?: { tool: string; result: AskResult }[];
 }
 
 export type AskEvent =
-  | { type: "start"; conversation_id: string; sent: string }
+  | { type: "start"; conversation_id: string; sent: string; mode?: "agent" }
   | { type: "status"; text: string }
-  | { type: "result"; result: AskResult; tool: string }
+  | { type: "step"; n: number; tool: string; title: string; thought: string }
+  | { type: "step_refused"; n: number; text: string }
+  | { type: "result"; result: AskResult; tool: string; step?: number }
+  | { type: "followups"; items: string[] }
   | { type: "answer"; text: string | null; grounded: boolean | null; unverified: string[];
       provider?: string; model?: string; explain: boolean; sent: string; note?: string;
       truncated?: boolean;
       /** Where the wording moves a figure the opposite way from the data. */
-      conflicts?: string[] }
+      conflicts?: string[]; steps?: number }
   | { type: "clarify" | "refused"; text: string }
   | { type: "error"; code: string; text: string }
   | { type: "done"; message_id: number; pinnable: boolean };
@@ -481,7 +490,7 @@ export const outlookApi = {
   book: (branch?: string) =>
     request<BookOutlook>(`/ai/outlook/book${branch ? `?branch=${encodeURIComponent(branch)}` : ""}`),
   trackRecord: () => request<TrackRecord>("/ai/outlook/track-record"),
-  bookVsPeers: () => request<{ items: PeerRow[]; self_bank: string }>("/ai/public/book-vs-peers"),
+  bookVsPeers: () => request<{ items: PeerRow[]; self_bank: string; label: string }>("/ai/public/book-vs-peers"),
   peers: (book: "deposit" | "lending") => request<PeerTable>(`/ai/public/peers?book=${book}`),
   macro: () => request<{ series: MacroSeries[]; last_mpc: string | null }>("/ai/public/macro"),
   refreshPublic: () => request<Record<string, unknown>>("/ai/public/refresh", { method: "POST" }),

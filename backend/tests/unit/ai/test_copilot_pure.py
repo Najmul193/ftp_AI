@@ -131,7 +131,7 @@ def test_the_provider_copy_has_tokens_and_blurred_amounts():
     text = masked_text(res, lambda kind, key: v.token(kind, key))
     assert "Gulshan" not in text and "0101" not in text and "969815" not in text
     assert v.token("BR", "0101") in text and v.token("DIV", "3") in text
-    assert "0.097 cr" in text and "+25 bp" in text
+    assert "9.7 lakh" in text and "+25 bp" in text
 
 
 # --- names that repeat, and plans that answer another question ------------------- #

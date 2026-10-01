@@ -574,7 +574,8 @@ _chat = [Depends(require("AI_CHAT")), Depends(require_ai_enabled)]
 
 
 def _asker(user: CurrentUser, scope) -> chat.Asker:
-    return chat.Asker(user.id, user.username, user.scope_level, user.scope_id, scope)
+    return chat.Asker(user.id, user.username, user.scope_level, user.scope_id, scope,
+                      can_scenario=user.has("SCENARIO_RUN"))
 
 
 class PresetIn(BaseModel):

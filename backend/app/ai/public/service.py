@@ -241,19 +241,26 @@ def peer_table(db: Session, book: str, month: date | None = None) -> dict:
             "banks": [{"bank": b, "group": groups[b], "rates": grid[b]} for b in banks]}
 
 
-def book_vs_peers(db: Session, *, as_of: date | None = None) -> list[dict]:
+def book_vs_peers(db: Session, *, as_of: date | None = None,
+                  branch_ids: list[int] | None = None) -> list[dict]:
     """Each of this bank's products: what its customers actually get (the
     balance-weighted rate from the book) against what the market posts for
-    the like product, and the balance that pricing gap sits on."""
-    as_of = as_of or db.scalar(select(func.max(AggDailyBranchProduct.business_date)))
+    the like product, and the balance that pricing gap sits on.
+
+    `branch_ids` limits the book to a part of the bank (a division's, a
+    branch's own); None is the whole bank."""
+    m = AggDailyBranchProduct
+    q = select(func.max(m.business_date))
+    if branch_ids is not None:
+        q = q.where(m.branch_id.in_(branch_ids or [-1]))
+    as_of = as_of or db.scalar(q)
     if as_of is None:
         return []
-    book_rows = db.execute(
-        select(AggDailyBranchProduct.product_code,
-               func.sum(AggDailyBranchProduct.total_balance),
-               func.sum(AggDailyBranchProduct.roi_x_balance))
-        .where(AggDailyBranchProduct.business_date == as_of)
-        .group_by(AggDailyBranchProduct.product_code)).all()
+    stmt = (select(m.product_code, func.sum(m.total_balance), func.sum(m.roi_x_balance))
+            .where(m.business_date == as_of).group_by(m.product_code))
+    if branch_ids is not None:
+        stmt = stmt.where(m.branch_id.in_(branch_ids or [-1]))
+    book_rows = db.execute(stmt).all()
     ours = {code: (Decimal(bal or 0), (Decimal(rx) / Decimal(bal)).quantize(Decimal("0.01"))
                    if bal else None) for code, bal, rx in book_rows}
     tables = {b: peer_table(db, b) for b in ("deposit", "lending")}

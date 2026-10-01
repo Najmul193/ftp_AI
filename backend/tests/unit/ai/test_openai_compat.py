@@ -244,3 +244,40 @@ def test_other_bad_requests_still_fail():
         return httpx.Response(400, json={"error": {"message": "context length exceeded"}})
     with pytest.raises(ProviderError):
         _provider(handler, brand="groq").complete(system="s", messages=[], json_mode=True)
+
+
+def test_openrouter_switches_reasoning_off():
+    body = {}
+
+    def handler(req):
+        body.update(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    _provider(handler, brand="openrouter").complete(system="s", messages=[], max_tokens=7)
+    assert body["reasoning"] == {"enabled": False}
+
+
+def test_an_error_inside_a_200_is_retried_then_classified(monkeypatch):
+    from app.ai.providers import openai_compat
+    monkeypatch.setattr(openai_compat, "_sleep", lambda s: None)
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(200, json={"error": {"message": "Upstream error from Nvidia: "
+                                                              "Service temporarily overloaded",
+                                                   "code": 503}})
+
+    with pytest.raises(ProviderError) as e:
+        _provider(handler, brand="openrouter").complete(system="s", messages=[], max_tokens=7)
+    assert e.value.code == "unavailable" and e.value.retryable and len(calls) == 3
+
+
+def test_an_error_inside_a_200_then_an_answer(monkeypatch):
+    from app.ai.providers import openai_compat
+    monkeypatch.setattr(openai_compat, "_sleep", lambda s: None)
+    replies = iter([httpx.Response(200, json={"error": {"message": "busy", "code": 429}}),
+                    httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})])
+    out = _provider(lambda req: next(replies), brand="openrouter").complete(
+        system="s", messages=[], max_tokens=7)
+    assert out.text == "OK"

@@ -70,7 +70,7 @@ def test_vault_persists():
 @pytest.mark.parametrize("amount,expected", [
     (4_127_341_182.25, "413 cr"),
     (41_273_411.82, "4.13 cr"),
-    (1_000_000, "0.1 cr"),
+    (1_000_000, "10 lakh"),
     (-2_345_678_901, "-235 cr"),
     (0, "0 cr"),
 ])

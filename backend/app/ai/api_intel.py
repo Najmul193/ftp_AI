@@ -43,15 +43,6 @@ def require_ai_enabled(db: DbDep) -> None:
 _view = [Depends(require("AI_VIEW")), Depends(require_ai_enabled)]
 
 
-def _head_office(user: Annotated[CurrentUser, Depends(require("AI_VIEW"))]) -> CurrentUser:
-    if user.scope_level is not ScopeLevel.HO:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "bank-wide figures are for head office")
-    return user
-
-
-HeadOffice = Annotated[CurrentUser, Depends(_head_office)]
-
-
 def _market_editor(user: Annotated[CurrentUser, Depends(require("AI_MARKET_EDIT"))]) -> CurrentUser:
     if user.scope_level is not ScopeLevel.HO:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "restricted to head office")
@@ -80,11 +71,13 @@ def peers(db: DbDep, book: Literal["deposit", "lending"] = "deposit") -> dict:
     return {**public.peer_table(db, book), "collected": public.last_collected(db)}
 
 
-@router.get("/public/book-vs-peers", dependencies=[Depends(require_ai_enabled)])
-def book_vs_peers(db: DbDep, _user: HeadOffice) -> dict:
-    """This bank's own product rates and balances against the market's posted
-    rates: bank-wide balances, so head office only."""
-    return {"items": public.book_vs_peers(db), "self_bank": public.meta(db)["self_bank"]}
+@router.get("/public/book-vs-peers", dependencies=_view)
+def book_vs_peers(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """The asker's product rates and balances against the market's posted
+    rates: head office sees the bank, a division its division, a branch its own."""
+    return {"items": public.book_vs_peers(db, branch_ids=None if scope.unrestricted
+                                          else list(scope.branch_ids or [])),
+            "self_bank": public.meta(db)["self_bank"], "label": _scope_label(db, user)}
 
 
 @router.get("/public/industry", dependencies=_view)

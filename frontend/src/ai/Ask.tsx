@@ -17,11 +17,18 @@ export function openAsk(question?: string, preset?: AskPreset) {
 
 interface Seed { question?: string; preset?: AskPreset }
 
+interface Step { n: number; tool: string; title: string; thought: string; result?: AskResult; refused?: string }
+
 interface Turn {
   question: string;
   sent?: string;
   status?: string;
   result?: AskResult;
+  /** A multi-step answer: each lookup, its reason and its result. */
+  steps?: Step[];
+  followups?: string[];
+  /** Reveal the answer as it lands; a reloaded thread shows at once. */
+  fresh?: boolean;
   answer?: Extract<AskEvent, { type: "answer" }>;
   stop?: { kind: "clarify" | "refused" | "error"; text: string };
   messageId?: number;
@@ -152,8 +159,16 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
         switch (e.type) {
           case "start": setConv(e.conversation_id); patch((t) => ({ ...t, sent: e.sent })); break;
           case "status": patch((t) => ({ ...t, status: e.text })); break;
-          case "result": patch((t) => ({ ...t, result: e.result })); break;
-          case "answer": patch((t) => ({ ...t, answer: e })); break;
+          case "step": patch((t) => ({ ...t, steps: [...(t.steps ?? []),
+            { n: e.n, tool: e.tool, title: e.title, thought: e.thought }] })); break;
+          case "step_refused": patch((t) => ({ ...t, steps: (t.steps ?? []).map((x) =>
+            x.n === e.n ? { ...x, refused: e.text } : x) })); break;
+          case "result": patch((t) => ({
+            ...t, result: t.result ?? e.result,
+            steps: e.step ? (t.steps ?? []).map((x) => (x.n === e.step ? { ...x, result: e.result } : x))
+              : t.steps })); break;
+          case "followups": patch((t) => ({ ...t, followups: e.items })); break;
+          case "answer": patch((t) => ({ ...t, answer: e, fresh: true })); break;
           case "clarify": case "refused": case "error":
             patch((t) => ({ ...t, stop: { kind: e.type, text: e.text } })); break;
           case "done": patch((t) => ({ ...t, done: true, status: undefined, messageId: e.message_id,
@@ -190,6 +205,9 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
     setConv(c.id);
     setTurns(c.messages.map((m: StoredMessage) => ({
       question: m.question, result: m.result ?? undefined, done: true, messageId: m.id,
+      steps: m.result?.steps && m.result.steps.length > 1
+        ? m.result.steps.map((x, n) => ({ n: n + 1, tool: x.tool, title: x.result.title, thought: "",
+                                          result: x.result })) : undefined,
       pinnable: m.pinnable,
       answer: m.answer != null && m.status === "ok"
         ? { type: "answer", text: m.answer, grounded: m.grounded, unverified: m.unverified,
@@ -281,7 +299,8 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
                       color: "var(--accent)", fontSize: "var(--fs-base)" }}>{c.title}</button>))}
                 </div>)}
             </div>)}
-          {turns.map((t, i) => <TurnView key={i} t={t} onPin={() => pin(i)} />)}
+          {turns.map((t, i) => <TurnView key={i} t={t} onPin={() => pin(i)}
+                                         onAsk={i === turns.length - 1 && !busy ? (q) => send(q) : undefined} />)}
         </div>
 
         <form onSubmit={submit} style={{ display: "flex", gap: 8, padding: 12, alignItems: "flex-end",
@@ -301,8 +320,71 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
   );
 }
 
-function TurnView({ t, onPin }: { t: Turn; onPin: () => void }) {
+const TOOL_WORDS: Record<string, string> = {
+  compare: "Compared", trend: "Traced day by day", why: "Split the change", market: "Read the market",
+  benchmarks: "Checked benchmarks", insights: "Read the findings", forecast: "Forecast the book",
+  market_forecast: "Forecast market rates", policy_outlook: "Read the policy signals",
+  scenario: "Ran a what-if", peer_compare: "Compared with other banks",
+};
+
+/** The lookups behind a multi-step answer, in order, each openable. */
+function Steps({ steps, live }: { steps: Step[]; live: boolean }) {
+  const [open, setOpen] = useState<number | null>(null);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ ...muted, fontWeight: 700, fontSize: "var(--fs-xs)", letterSpacing: ".06em",
+                    textTransform: "uppercase" }}>How I worked it out</div>
+      {steps.map((x) => (
+        <div key={x.n} style={{ border: "1px solid var(--border)", borderRadius: 8,
+                                background: "var(--surface-2)" }}>
+          <button type="button" onClick={() => setOpen(open === x.n ? null : x.n)} disabled={!x.result}
+                  style={{ all: "unset", cursor: x.result ? "pointer" : "default", display: "flex", gap: 10,
+                           alignItems: "flex-start", padding: "8px 10px", width: "calc(100% - 20px)" }}>
+            <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: 10, display: "grid",
+                           placeItems: "center", fontSize: 11, fontWeight: 700,
+                           background: x.refused ? "var(--status-warning)" : x.result ? "var(--accent)" : "var(--border)",
+                           color: "var(--surface-1)" }}>{x.result || x.refused ? x.n : "…"}</span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: "var(--fs-sm)" }}>
+                {TOOL_WORDS[x.tool] ?? x.tool}{x.title ? `: ${x.title}` : ""}</span>
+              {x.thought && <span style={{ ...muted, display: "block" }}>{x.thought}</span>}
+              {x.refused && <span style={{ ...muted, display: "block" }}>Not available: {x.refused}</span>}
+            </span>
+            {x.result && <span style={{ ...muted, flexShrink: 0 }}>{open === x.n ? "Hide" : "Show"}</span>}
+          </button>
+          {open === x.n && x.result && (
+            <div style={{ padding: "0 10px 10px" }}><AnswerView r={x.result} /></div>)}
+        </div>))}
+      {live && <div style={{ ...muted, display: "flex", gap: 6, alignItems: "center" }}>
+        <Icon name="sparkle" size={12} />thinking…</div>}
+    </div>
+  );
+}
+
+/** Reveal a fresh answer a few words at a time, as if written. */
+function useReveal(text: string, on: boolean) {
+  const [n, setN] = useState(on ? 0 : text.length);
+  useEffect(() => {
+    if (!on) { setN(text.length); return; }
+    setN(0);
+    const step = Math.max(3, Math.ceil(text.length / 70));
+    const id = window.setInterval(() => setN((x) => {
+      if (x >= text.length) { window.clearInterval(id); return x; }
+      return Math.min(text.length, x + step);
+    }), 18);
+    return () => window.clearInterval(id);
+  }, [text, on]);
+  return text.slice(0, n);
+}
+
+function Revealed({ text, fresh }: { text: string; fresh?: boolean }) {
+  const shown = useReveal(text, Boolean(fresh));
+  return <Narrative text={shown} />;
+}
+
+function TurnView({ t, onPin, onAsk }: { t: Turn; onPin: () => void; onAsk?: (q: string) => void }) {
   const a = t.answer;
+  const multi = (t.steps?.length ?? 0) > 1 || (!t.done && (t.steps?.length ?? 0) > 0);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ alignSelf: "flex-end", maxWidth: "85%", background: "var(--accent-soft)",
@@ -310,12 +392,12 @@ function TurnView({ t, onPin }: { t: Turn; onPin: () => void }) {
                     fontSize: "var(--fs-base)", lineHeight: 1.45 }}>{t.question}</div>
       <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12,
                     display: "flex", flexDirection: "column", gap: 10 }}>
-        {t.result && (
+        {t.result && !multi && (
           <div>
             <div style={{ fontWeight: 650, color: "var(--text-primary)" }}>{t.result.title}</div>
             <div style={muted}>{t.result.description}</div>
           </div>)}
-        {t.result?.facts && t.result.facts.length > 0 && (
+        {!multi && t.result?.facts && t.result.facts.length > 0 && (
           <div style={{ padding: "8px 10px", borderRadius: 8, background: "var(--surface-2)",
                         border: "1px solid var(--border)" }}>
             <div style={{ fontSize: "var(--fs-xs)", fontWeight: 700, letterSpacing: ".06em",
@@ -331,8 +413,16 @@ function TurnView({ t, onPin }: { t: Turn; onPin: () => void }) {
             The wording below says {a.conflicts.join(", ")} moved the other way from the data.
             Rely on “What the figures show” and the table.
           </p>)}
-        {a?.text && <Narrative text={a.text} />}
-        {t.result && <AnswerView r={t.result} />}
+        {a?.text && <Revealed text={a.text} fresh={t.fresh} />}
+        {multi ? <Steps steps={t.steps!} live={!t.done && !a} />
+          : t.result && <AnswerView r={t.result} />}
+        {t.done && onAsk && t.followups && t.followups.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {t.followups.map((q) => (
+              <button key={q} type="button" onClick={() => onAsk(q)} className="btn btn-secondary"
+                      style={{ padding: "5px 10px", borderRadius: 999, fontSize: "var(--fs-sm)",
+                               textAlign: "left", lineHeight: 1.35 }}>{q} →</button>))}
+          </div>)}
         {t.stop && (
           <p style={{ margin: 0, lineHeight: 1.5 }}>
             <Pill tone={t.stop.kind === "clarify" ? "info" : t.stop.kind === "refused" ? "warning" : "critical"}>

@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.context import fact_sheet as sheet
-from app.ai.copilot.catalog import METRICS, Plan, prior, window
+from app.ai.copilot.catalog import INTEL_TOOLS, METRICS, Plan, prior, window
 from app.ai.copilot.result import (
     Column, Result, change_facts, chart_for, compute, metric_columns, passes,
 )
@@ -396,7 +396,11 @@ def insights_tool(db: Session, reader: engine.Reader, names: dict[str, str]) -> 
 
 
 def execute(db: Session, scope: ScopeFilter, plan: Plan, where: Where, *, head_office: bool,
-            reader: engine.Reader, names: dict[str, str]) -> Result:
+            reader: engine.Reader, names: dict[str, str], can_scenario: bool = False) -> Result:
+    if plan.tool in INTEL_TOOLS:
+        from app.ai.copilot import tools_intel   # it builds on this module's Where
+        return tools_intel.execute(db, scope, plan, where, head_office=head_office,
+                                   can_scenario=can_scenario)
     if plan.tool == "market":
         return market_tool(db, plan)
     if plan.tool == "benchmarks":
