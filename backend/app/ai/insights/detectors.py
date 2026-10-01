@@ -540,8 +540,11 @@ def peer_pricing(fs: FactSheet) -> list[Finding]:
                       + (", and we are below three-quarters of all banks" if below_most else "")
                       + f". Depositors who shop around can move. Matching the median would cost "
                         f"about {taka(cost)} a month; losing the balance would cost its funding."),
-                money_at_stake=cost, money_basis="a month, to pay the private banks' median",
-                evidence=ev, sources=(_PEER, _BOOK)))
+                money_at_stake=cost, money_basis="a month to match private banks",
+                evidence=ev, sources=(_PEER, _BOOK),
+                action={"type": "scenario", "label": "Simulate matching the private banks",
+                        "scenario": {"product_rate_bp": {g.product_code: abs(bp(gap))},
+                                     "horizon_months": 6}}))
         else:
             if abs(gap) < PEER_LOAN_GAP:
                 continue
@@ -556,8 +559,7 @@ def peer_pricing(fs: FactSheet) -> list[Finding]:
                     body=(f"Borrowers pay {pct(g.our_rate)} on {taka(g.balance)}; private banks "
                           f"post a median {pct(ref)} for {g.peer_label.lower()} "
                           f"({_month_of(g.month)}). Good borrowers can refinance elsewhere."),
-                    money_at_stake=premium,
-                    money_basis="a month of premium over market pricing, at risk",
+                    money_at_stake=premium, money_basis="a month of premium at risk",
                     evidence=ev, sources=(_PEER, _BOOK)))
             else:
                 lost = (g.balance * (ref - g.our_rate) / 100 * _DAYS_PER_MONTH).quantize(Decimal(1))
@@ -569,7 +571,10 @@ def peer_pricing(fs: FactSheet) -> list[Finding]:
                           f"({_month_of(g.month)}). Pricing new and renewing loans nearer the "
                           f"market would earn about {taka(lost)} a month more."),
                     money_at_stake=lost, money_basis="per month",
-                    evidence=ev, sources=(_PEER, _BOOK)))
+                    evidence=ev, sources=(_PEER, _BOOK),
+                    action={"type": "scenario", "label": "Simulate repricing to the market",
+                            "scenario": {"product_rate_bp": {g.product_code: abs(bp(gap))},
+                                         "horizon_months": 12}}))
     return out
 
 

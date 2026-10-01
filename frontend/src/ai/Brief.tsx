@@ -1,8 +1,9 @@
 import { Fragment, ReactNode, useEffect, useState } from "react";
 import { Button, Card, MiniButton, Pill } from "../components/ui";
 import { longDate, shortDate } from "../format";
-import { useAsync } from "../state";
+import { useApp, useAsync } from "../state";
 import { Brief, BriefDecision, insightApi, prepareRateChange } from "./api";
+import { scenarioLink } from "./Scenario";
 import { money, SeverityPill, useCanDraftRates } from "./Insights";
 
 const para: React.CSSProperties = {
@@ -59,6 +60,7 @@ function useSpeech() {
 
 function Decision({ d, n }: { d: BriefDecision; n: number }) {
   const canDraft = useCanDraftRates();
+  const { can } = useApp();
   const m = money(d);
   return (
     <li style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0",
@@ -77,9 +79,15 @@ function Decision({ d, n }: { d: BriefDecision; n: number }) {
         </div>
       </div>
       {d.action?.type === "prepare_rate_change" && canDraft && (
-        <MiniButton icon="percent" onClick={() => prepareRateChange(d.action!)}
+        <MiniButton icon="percent"
+                    onClick={() => d.action?.type === "prepare_rate_change" && prepareRateChange(d.action)}
                     title={`Open Rate configuration with ${Number(d.action.suggested).toFixed(2)}% filled in`}>
           Prepare
+        </MiniButton>)}
+      {d.action?.type === "scenario" && can("SCENARIO_RUN") && (
+        <MiniButton icon="layers" title={d.action.label}
+                    onClick={() => { if (d.action?.type === "scenario") location.hash = scenarioLink(d.action.scenario); }}>
+          Simulate
         </MiniButton>)}
     </li>
   );

@@ -375,3 +375,16 @@ class ForecastRecord(AiBase):
     actual: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SavedScenario(AiBase):
+    """A what-if a person kept: its settings, and the headline it gave then."""
+
+    __tablename__ = "ai_scenarios"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    params: Mapped[dict] = mapped_column(JSONB)
+    summary: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -20,6 +20,10 @@ from app.ai.forecast import track
 from app.ai.insights import engine
 from app.ai.public import parse as public_parse
 from app.ai.public import service as public
+from app.ai.gateway import gateway as gw
+from app.ai.gateway.gateway import Caller
+from app.ai.scenario import engine as scenario_engine
+from app.ai.scenario import service as scenario
 from app.api.deps import CurrentUser, DbDep, ScopeDep, get_active_user, require
 from app.domain.scope import ScopeViolation
 from app.domain.types import ScopeLevel
@@ -194,3 +198,84 @@ def _scope_label(db, user: CurrentUser) -> str:
         return f"{row.name} {user.scope_level.value.lower()}" if row else "Your area"
     b = db.get(Branch, user.scope_id)
     return f"{b.branch_name} ({b.branch_code})" if b else "Your branch"
+
+
+# --- scenario lab ----------------------------------------------------------------------- #
+
+_scenario = [Depends(require("SCENARIO_RUN")), Depends(require_ai_enabled)]
+
+
+def _scope_branches(db, scope) -> set[str]:
+    q = select(Branch.branch_code)
+    if not scope.unrestricted:
+        q = q.where(Branch.id.in_(scope.branch_ids or [-1]))
+    return set(db.scalars(q))
+
+
+@router.get("/scenario/presets", dependencies=_scenario)
+def scenario_presets(db: DbDep, user: ActiveUser) -> dict:
+    return {"items": scenario.presets(db, head_office=user.scope_level is ScopeLevel.HO),
+            "defaults": scenario_engine.Scenario().to_dict(), "limits": scenario_engine.LIMITS}
+
+
+class ScenarioIn(BaseModel):
+    scenario: dict
+
+
+@router.post("/scenario/run", dependencies=_scenario)
+def scenario_run(body: ScenarioIn, db: DbDep, scope: ScopeDep) -> dict:
+    """Run a what-if on the asker's part of the book. Code only: no model."""
+    try:
+        s = scenario_engine.parse(body.scenario, branches=_scope_branches(db, scope))
+    except scenario_engine.ScenarioError as exc:
+        raise HTTPException(422, {"code": "bad_scenario", "message": str(exc)}) from exc
+    return scenario.run(db, scope, s)
+
+
+class ScenarioTextIn(BaseModel):
+    text: str = Field(min_length=5, max_length=600)
+
+
+@router.post("/scenario/parse", dependencies=[*_scenario, Depends(require("AI_CHAT"))])
+def scenario_parse(body: ScenarioTextIn, db: DbDep, user: ActiveUser) -> dict:
+    """A scenario read out of a sentence by the model, checked field by field.
+    The model sees the question and the product list, never the book."""
+    try:
+        return scenario.from_text(db, Caller(user.id, user.username), body.text)
+    except scenario_engine.ScenarioError as exc:
+        raise HTTPException(422, {"code": "bad_scenario",
+                                  "message": f"I could not read a scenario from that: {exc}"}) from exc
+    except (gw.AiUnavailable, gw.GatewayBlocked, gw.GatewayError) as exc:
+        raise HTTPException(502, {"code": getattr(exc, "code", "provider"),
+                                  "message": getattr(exc, "message", str(exc))}) from exc
+
+
+class SaveScenarioIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    scenario: dict
+    summary: dict = Field(default_factory=dict)
+
+
+@router.get("/scenario/saved", dependencies=_scenario)
+def scenario_saved(db: DbDep, user: ActiveUser) -> dict:
+    return {"items": [{"id": s.id, "name": s.name, "scenario": s.params, "summary": s.summary,
+                       "created_at": s.created_at} for s in scenario.saved(db, user.id)]}
+
+
+@router.post("/scenario/saved", dependencies=_scenario)
+def scenario_save(body: SaveScenarioIn, db: DbDep, user: ActiveUser) -> dict:
+    try:
+        s = scenario_engine.parse(body.scenario)
+    except scenario_engine.ScenarioError as exc:
+        raise HTTPException(422, {"code": "bad_scenario", "message": str(exc)}) from exc
+    row = scenario.save(db, user.id, body.name, s, body.summary)
+    return {"id": row.id}
+
+
+@router.delete("/scenario/saved/{sid}", status_code=204, dependencies=_scenario)
+def scenario_delete(sid: int, db: DbDep, user: ActiveUser) -> None:
+    from app.ai.models import SavedScenario
+    row = db.get(SavedScenario, sid)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(404, "not found")
+    db.delete(row)

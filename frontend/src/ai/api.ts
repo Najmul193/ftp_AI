@@ -193,12 +193,15 @@ export interface RateDraftAction {
   tenor: string; note: string;
 }
 
+/** Open the scenario lab on a what-if built from the finding. */
+export interface ScenarioAction { type: "scenario"; label: string; scenario: Record<string, unknown> }
+
 export interface Evidence { label: string; value: string; unit: "pct" | "bp" | "bdt" | "pct_change" | "date" | "text" }
 
 export interface Insight {
   id: number; kind: string; subject: string; scope: string; severity: Severity;
   title: string; body: string; money_at_stake: number | null; money_basis: string | null;
-  evidence: Evidence[]; action: RateDraftAction | null;
+  evidence: Evidence[]; action: RateDraftAction | ScenarioAction | null;
   sources: { label: string; url?: string; metric?: string }[];
   business_date: string | null; status: "active" | "resolved";
   raised_at: string; last_seen_at: string; resolved_at: string | null;
@@ -208,7 +211,7 @@ export interface Insight {
 export interface BriefDecision {
   kind: string; subject: string; title: string; severity: Severity;
   money_at_stake: number | null; money_basis: string | null;
-  action: RateDraftAction | null; insight_id: number | null;
+  action: RateDraftAction | ScenarioAction | null; insight_id: number | null;
 }
 
 export interface Brief {
@@ -482,4 +485,50 @@ export const outlookApi = {
   peers: (book: "deposit" | "lending") => request<PeerTable>(`/ai/public/peers?book=${book}`),
   macro: () => request<{ series: MacroSeries[]; last_mpc: string | null }>("/ai/public/macro"),
   refreshPublic: () => request<Record<string, unknown>>("/ai/public/refresh", { method: "POST" }),
+};
+
+// --- Scenario lab ---------------------------------------------------------------
+
+export interface ScenarioParams {
+  market_bp: number; bench_follow: number; bench_follow_demand: number; deposit_pass: number;
+  demand_pass: number; loan_pass: number; competitor_bp: number;
+  product_bench_bp: Record<string, number>; product_rate_bp: Record<string, number>;
+  deposit_growth_pct: number; loan_growth_pct: number; elasticity: number;
+  branches: string[]; horizon_months: number;
+}
+
+export interface ScenarioTotals {
+  deposits: number; advances: number; branch_ftp: number; customer_nii: number;
+  surplus_income: number; bank_nii: number; treasury: number; nim: number | null;
+}
+
+export interface ScenarioGroup {
+  key: string; label: string; side: string; ftp_base: number; ftp_new: number; nii_base: number;
+  nii_new: number; balance_base: number; balance_new: number; ftp_change: number; nii_change: number;
+}
+
+export interface ScenarioResult {
+  available: boolean; reason?: string; scenario: ScenarioParams; days: number;
+  market_rate: number; market_rate_label: string;
+  base: ScenarioTotals; scenario_totals: ScenarioTotals; change: ScenarioTotals;
+  waterfall: { key: string; label: string; value: number }[];
+  by_product: ScenarioGroup[]; by_branch: ScenarioGroup[];
+  path: { day: number; branch_ftp_per_day: number; bank_nii_per_day: number }[];
+  base_window: { latest: string; start: string; days: number }; lines: number;
+}
+
+export interface ScenarioPreset { key: string; label: string; why: string; scenario: ScenarioParams }
+
+export const scenarioApi = {
+  presets: () => request<{ items: ScenarioPreset[]; defaults: ScenarioParams }>("/ai/scenario/presets"),
+  run: (scenario: ScenarioParams) =>
+    request<ScenarioResult>("/ai/scenario/run", { method: "POST", ...json({ scenario }) }),
+  parse: (text: string) =>
+    request<{ scenario: ScenarioParams; title: string; assumptions: string[]; provider: string; model: string }>(
+      "/ai/scenario/parse", { method: "POST", ...json({ text }) }),
+  saved: () => request<{ items: { id: number; name: string; scenario: ScenarioParams;
+                                  summary: Record<string, number>; created_at: string }[] }>("/ai/scenario/saved"),
+  save: (name: string, scenario: ScenarioParams, summary: Record<string, number>) =>
+    request<{ id: number }>("/ai/scenario/saved", { method: "POST", ...json({ name, scenario, summary }) }),
+  remove: (id: number) => request<void>(`/ai/scenario/saved/${id}`, { method: "DELETE" }),
 };

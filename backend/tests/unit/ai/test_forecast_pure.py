@@ -201,3 +201,19 @@ def test_policy_outlook_speaks_only_when_it_leans():
                          ("The IMF expects inflation to ease.",))
     [f] = detectors.policy_outlook(_fs(policy=leaning))
     assert f.audience == "PUBLIC" and "cut" in f.title and "not a market price" in f.body
+
+
+def test_every_finding_fits_its_columns():
+    """ai_insights: kind varchar(40), subject varchar(60), money_basis varchar(40)."""
+    fs = _fs(peer_gaps=[_gap(), _gap(product_code="HMLN5", side="ASSET", our_rate=D("10"),
+                                     balance=D("2e8")),
+                        _gap(product_code="COROD", side="ASSET", our_rate=D("16"), balance=D("2e8"))],
+             landings={"net_ftp_profit": _landing(), "deposits": _landing(
+                 metric="deposits", kind="stock", last=D("1e10"), p50=D("9.5e9"),
+                 p10=D("9e9"), p90=D("9.9e9"), month_end=date(2026, 9, 30))},
+             policy=PolicyView("cut", {"hike": 5, "hold": 40, "cut": 55}, date(2026, 12, 23), D("9.5")))
+    found = (detectors.peer_pricing(fs) + detectors.landing(fs) + detectors.policy_outlook(fs))
+    assert len(found) >= 5
+    for f in found:
+        assert len(f.kind) <= 40 and len(f.subject) <= 60
+        assert f.money_basis is None or len(f.money_basis) <= 40, f.money_basis

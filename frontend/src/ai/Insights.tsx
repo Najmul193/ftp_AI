@@ -3,6 +3,7 @@ import { Button, Card, Empty, MiniButton, Pill } from "../components/ui";
 import { longDate } from "../format";
 import { useApp, useAsync } from "../state";
 import { Evidence, Insight, insightApi, prepareRateChange, Severity, taka } from "./api";
+import { scenarioLink } from "./Scenario";
 
 const para: React.CSSProperties = {
   margin: 0, fontSize: "var(--fs-base)", color: "var(--text-secondary)", lineHeight: 1.55,
@@ -112,6 +113,7 @@ function InsightRow({ i, focused, onChange }: { i: Insight; focused: boolean; on
   const [useful, setUseful] = useState(i.useful);
   const ref = useRef<HTMLElement>(null);
   const canDraft = useCanDraftRates();
+  const { can } = useApp();
 
   useEffect(() => {
     if (!focused) return;
@@ -187,8 +189,14 @@ function InsightRow({ i, focused, onChange }: { i: Insight; focused: boolean; on
               )}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                 {i.action?.type === "prepare_rate_change" && i.status === "active" && canDraft && (
-                  <Button variant="primary" size="sm" icon="percent" onClick={() => prepareRateChange(i.action!)}>
+                  <Button variant="primary" size="sm" icon="percent"
+                          onClick={() => i.action?.type === "prepare_rate_change" && prepareRateChange(i.action)}>
                     Prepare rate change to {Number(i.action.suggested).toFixed(2)}%
+                  </Button>)}
+                {i.action?.type === "scenario" && i.status === "active" && can("SCENARIO_RUN") && (
+                  <Button variant="primary" size="sm" icon="layers"
+                          onClick={() => { if (i.action?.type === "scenario") location.hash = scenarioLink(i.action.scenario); }}>
+                    {i.action.label}
                   </Button>)}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>Useful?</span>
