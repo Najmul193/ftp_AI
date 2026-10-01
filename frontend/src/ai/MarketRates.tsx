@@ -4,7 +4,7 @@ import { Button, Card, Empty, Grid, MiniButton, Pill } from "../components/ui";
 import { useApp, useAsync } from "../state";
 import { openAsk } from "./Ask";
 import {
-  MarketHit, marketRatesApi, OurProduct, PeerSet, RateBasis, RateBook, taka,
+  MarketHit, marketRatesApi, OurProduct, outlookApi, PeerSet, RateBasis, RateBook, taka,
 } from "./api";
 import { clearPageExtra, setPageExtra } from "./pageContext";
 import { scenarioLink } from "./Scenario";
@@ -43,7 +43,9 @@ export default function MarketRates() {
   const [product, setProduct] = useState<string | undefined>(init.product);
   const [bank, setBank] = useState<string | undefined>(init.bank);
   const [basis, setBasis] = useState<RateBasis>("best");
-  const grid = useAsync(() => marketRatesApi.grid(book, peers, basis), [book, peers, basis]);
+  // Bumped by Refresh: every card on the page reads again.
+  const [tick, setTick] = useState(0);
+  const grid = useAsync(() => marketRatesApi.grid(book, peers, basis), [book, peers, basis, tick]);
 
   // Ask FTP reads what is open here: "this bank", "this rate".
   useEffect(() => {
@@ -79,20 +81,105 @@ export default function MarketRates() {
             <MiniButton active={basis === "typical"} onClick={() => setBasis("typical")}>Typical</MiniButton></span>
         </div>
         {grid.data?.month && <span style={muted}>Bangladesh Bank, posted rates for {new Date(`${grid.data.month}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })} · {grid.data.banks.length} banks</span>}
+        <span style={{ flex: 1 }} />
+        <RefreshButton collected={grid.data?.collected ?? null} onDone={() => setTick((t) => t + 1)} />
       </div>
       {grid.error ? <Card><Empty title="Could not load the rates" hint={grid.error} /></Card>
         : !grid.data ? <p style={muted}>Loading…</p>
         : !grid.data.month ? <Card><Empty title="No bank-wise rates yet" hint="Bangladesh Bank's tables are collected with the public data job." /></Card>
         : <>
-            {product && <CategoryCard book={book} product={product} peers={peers} basis={basis}
+            {product && <CategoryCard key={`c${tick}`} book={book} product={product} peers={peers} basis={basis}
                                       onClose={() => setProduct(undefined)} onBank={setBank} />}
-            {bank && <BankCard code={bank} basis={basis} onClose={() => setBank(undefined)}
+            {bank && <BankCard key={`b${tick}`} code={bank} basis={basis} onClose={() => setBank(undefined)}
                                onCategory={(b, p) => { setBook(b); setProduct(p); }} />}
             <GridCard data={grid.data} product={product} onCategory={setProduct} onBank={setBank} />
           </>}
-      <OurProducts />
-      <Movers peers={peers} />
+      <OurProducts key={`p${tick}`} />
+      <Movers key={`m${tick}`} peers={peers} />
+      <Sources month={grid.data?.month ?? null} collected={grid.data?.collected ?? null} />
     </div>
+  );
+}
+
+const ago = (iso: string | null) => {
+  if (!iso) return "not yet";
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  if (m < 60 * 24) return `${Math.round(m / 60)} h ago`;
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+};
+
+/**
+ * Head office's treasury desk reads Bangladesh Bank's tables again now; any
+ * other user reloads what is on the page. Either way, every card reads again.
+ */
+function RefreshButton({ collected, onDone }: { collected: string | null; onDone: () => void }) {
+  const { can, me } = useApp();
+  const editor = can("AI_MARKET_EDIT") && me?.scope_level === "HO";
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: "good" | "warning" | "critical"; text: string } | null>(null);
+  const run = async () => {
+    if (!editor) { onDone(); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const r = await outlookApi.refreshPublic() as {
+        status?: string; reason?: string; blocked?: string; errors?: string[];
+        bb?: { pages?: Record<string, { month?: string; banks?: number; rates?: number }> } };
+      const dep = r.bb?.pages?.deposit;
+      if (r.blocked) setMsg({ tone: "warning", text: `Bangladesh Bank asked for human verification, so nothing was read: ${r.blocked}` });
+      else if (r.status === "ok" || r.status === "partial")
+        setMsg({ tone: r.status === "ok" ? "good" : "warning",
+                 text: `Read from Bangladesh Bank just now${dep?.month ? `: ${new Date(`${dep.month}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}, ${dep.banks} banks` : ""}.`
+                   + (r.errors?.length ? ` Some sources did not answer: ${r.errors.join("; ")}` : "") });
+      else setMsg({ tone: "warning", text: r.reason ?? `Not refreshed (${r.status ?? "unknown"}).` });
+      onDone();
+    } catch (e) { setMsg({ tone: "critical", text: (e as Error).message }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+      {msg && <Pill tone={msg.tone}>{msg.text}</Pill>}
+      <span style={muted}>Collected {ago(collected)}</span>
+      <MiniButton icon="refresh" onClick={run} disabled={busy}
+                  title={editor ? "Read Bangladesh Bank's bank-wise tables again now" : "Reload this page's figures"}>
+        {busy ? "Reading Bangladesh Bank…" : editor ? "Refresh from Bangladesh Bank" : "Reload"}</MiniButton>
+    </span>
+  );
+}
+
+const SOURCE_LINKS: [string, string, string][] = [
+  ["Scheduled banks' deposit rates, bank by bank",
+   "https://www.bb.org.bd/en/index.php/financialactivity/interestdeposit",
+   "Savings, SND and fixed deposit rates of all 61 banks: the rows of the deposit grid."],
+  ["Scheduled banks' lending rates, bank by bank",
+   "https://www.bb.org.bd/en/index.php/financialactivity/interestlending",
+   "Agriculture, term, working capital, trade, housing, consumer and card rates: the loan grid."],
+  ["Interest rates: the industry's weighted averages",
+   "https://www.bb.org.bd/en/index.php/econdata/intrate",
+   "All banks' average deposit and lending rate and spread, month by month."],
+  ["Bangladesh Bank home page (policy rates)", "https://www.bb.org.bd/en/index.php",
+   "Repo, SLF and SDF, used by the outlook."],
+];
+
+/** Where every figure on this page comes from, to check it at the source. */
+function Sources({ month, collected }: { month: string | null; collected: string | null }) {
+  return (
+    <Card title="Sources"
+          subtitle={`Every other bank's rate on this page is copied from Bangladesh Bank's published tables, unchanged${month ? `: the ${new Date(`${month}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })} tables` : ""}, read ${ago(collected)}. Open them to check any figure.`}>
+      <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+        {SOURCE_LINKS.map(([label, href, what]) => (
+          <li key={href}>
+            <a href={href} target="_blank" rel="noreferrer" style={{ fontWeight: 600 }}>{label} ↗</a>
+            <div style={muted}>{what} <span style={{ wordBreak: "break-all" }}>{href}</span></div>
+          </li>))}
+      </ul>
+      <p style={{ ...muted, margin: "10px 0 0" }}>
+        "Our customers get" is not from Bangladesh Bank: it is our own book's balance-weighted average
+        customer rate, from the FTP platform. Matching our products to Bangladesh Bank's rate types is
+        an inference from each product's name and term, shown in "Our products against the market".
+      </p>
+    </Card>
   );
 }
 

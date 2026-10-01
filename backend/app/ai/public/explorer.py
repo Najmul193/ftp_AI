@@ -125,7 +125,7 @@ def grid(db: Session, book: str, peers: str, branch_ids: list[int] | None,
                         for p in order}}
             for c in bank_codes]
     return {"book": book, "month": month, "months": months, "peers": peers, "peer_label": label,
-            "basis": basis,
+            "basis": basis, "collected": public.last_collected(db),
             "self_bank": self_bank, "categories": cats, "banks": rows}
 
 

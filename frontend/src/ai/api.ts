@@ -597,7 +597,7 @@ export interface MarketHit {
 
 export interface MarketGrid {
   book: RateBook; month: string | null; months?: string[]; peers: PeerSet; peer_label: string;
-  self_bank: string; basis: RateBasis;
+  self_bank: string; basis: RateBasis; collected: string | null;
   categories: { product: string; label: string; median: number | null; p25: number | null; p75: number | null;
                 rank: number | null; banks: number; self: number | null; peer_median: number | null;
                 book: { rate: number | null; balance: number; products: string[] } | null }[];
