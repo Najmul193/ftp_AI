@@ -541,3 +541,40 @@ export const scenarioApi = {
     request<{ id: number }>("/ai/scenario/saved", { method: "POST", ...json({ name, scenario, summary }) }),
   remove: (id: number) => request<void>(`/ai/scenario/saved/${id}`, { method: "DELETE" }),
 };
+
+// --- The bank's pulse -------------------------------------------------------------
+
+export interface PulseItem {
+  id: number; title: string; severity: Severity; money: number | null; basis: string | null;
+  action: RateDraftAction | ScenarioAction | null;
+}
+
+export interface Pulse {
+  available: boolean; reason?: string; label: string; as_of: string; score: number; grade: string;
+  parts: { key: string; label: string; score: number; value: string; explain: string; weight: number }[];
+  versus: { label: string; ours: number | null; industry: number | null; better: "lower" | "higher" }[];
+  industry_month: string | null; outlook: BookOutlook | null;
+  risks: PulseItem[]; openings: PulseItem[];
+  ratios: Record<string, number | null>;
+}
+
+export const pulseApi = { get: () => request<Pulse>("/ai/pulse") };
+
+// --- The ALCO pack ----------------------------------------------------------------
+
+export interface AlcoPack {
+  label: string; prepared: string; policy: PolicyOutlook; market: MarketForecast[];
+  book: BookOutlook | null;
+  sensitivity: { label: string; bank_nii: number; branch_ftp: number; treasury: number;
+                 deposits: number; nim: number | null }[];
+  pricing: PeerRow[]; benchmarks: BenchmarkRow[];
+  decisions: { id: number; title: string; severity: Severity; money: number | null; basis: string | null }[];
+  macro: MacroSeries[];
+}
+
+export const alcoApi = {
+  get: () => request<AlcoPack>("/ai/alco"),
+  commentary: () => request<{ text: string; grounded: boolean | null; unverified: string[];
+                              provider: string; model: string; truncated: boolean; sent: string }>(
+    "/ai/alco/commentary", { method: "POST" }),
+};

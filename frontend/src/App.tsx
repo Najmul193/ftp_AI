@@ -21,6 +21,9 @@ import Bell from "./ai/Bell";
 import AskLauncher from "./ai/Ask";
 import Coach from "./ai/Coach";
 import Outlook from "./ai/Outlook";
+import HomeCard from "./ai/HomeCard";
+import Pulse from "./ai/Pulse";
+import AlcoPack from "./ai/AlcoPack";
 import Scenario from "./ai/Scenario";
 
 //: Basic overview is first and is where a session lands after sign-in.
@@ -48,12 +51,18 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
   { id: "intel", label: "Intelligence", group: "Intelligence", icon: "globe",
     perm: "AI_VIEW", ai: true,
     desc: "This morning's brief, what needs a decision, and the market behind it." },
+  { id: "pulse", label: "Bank pulse", group: "Intelligence", icon: "target",
+    perm: "AI_VIEW", ai: true,
+    desc: "One score for the bank's health, what it is made of, and the bank against the industry." },
   { id: "outlook", label: "Outlook", group: "Intelligence", icon: "trend",
     perm: "AI_VIEW", ai: true,
     desc: "Where the book, the market and the policy rate are heading, and how we price against other banks." },
   { id: "scenario", label: "Scenario lab", group: "Intelligence", icon: "layers",
     perm: "SCENARIO_RUN", ai: true,
     desc: "Move rates, pass-through and balances, and see bank NII, branch profit and treasury respond." },
+  { id: "alco", label: "ALCO pack", group: "Intelligence", icon: "download",
+    perm: "SCENARIO_RUN", ai: true,
+    desc: "The month's asset-liability pack: outlook, sensitivity, pricing and decisions, ready to print." },
   { id: "coach", label: "Branch coach", group: "Intelligence", icon: "target",
     perm: "AI_VIEW", ai: true,
     desc: "Where a branch stands among its peers, and the actions worth most this week." },
@@ -143,7 +152,9 @@ function Shell() {
                     intel: ai?.enabled ? Intelligence : Daily,
                     coach: ai?.enabled ? Coach : Daily,
                     outlook: ai?.enabled ? Outlook : Daily,
-                    scenario: ai?.enabled ? Scenario : Daily }[view] ?? Daily;
+                    scenario: ai?.enabled ? Scenario : Daily,
+                    pulse: ai?.enabled ? Pulse : Daily,
+                    alco: ai?.enabled ? AlcoPack : Daily }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 
   const activeFilterCount = (Object.entries(filters) as [string, unknown][]).reduce(
@@ -250,6 +261,7 @@ function Shell() {
             <p style={{ margin: "2px 0 0", fontSize: "var(--fs-base)",
                         color: "var(--text-secondary)" }}>{page.desc}</p>
           </header>}
+          {view === "basic" && ai?.enabled && ai.can_view && <HomeCard />}
           <Current />
         </div>
 
@@ -336,7 +348,7 @@ function Sidebar({ items, view, rail, drawer = false, onClose }: {
 
       <nav aria-label="Main" style={{ flex: 1, padding: rail ? "12px 10px" : "8px 12px",
                                        overflowY: "auto" }}>
-        {["Analyse", "Intelligence", "Operate"].map((group) => {
+        {["Intelligence", "Analyse", "Operate"].map((group) => {
           const groupItems = items.filter((n) => n.group === group);
           if (!groupItems.length) return null;
           return (

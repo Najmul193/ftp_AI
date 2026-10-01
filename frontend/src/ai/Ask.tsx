@@ -11,11 +11,11 @@ import { Narrative } from "./Brief";
 /** Open Ask FTP from anywhere, optionally with a question ready to send.
  *  With a `preset` (a plan a page built, e.g. a "Why?" button) it is sent at
  *  once and runs exactly as built, with no planning step. */
-export function openAsk(question?: string, preset?: AskPreset) {
-  window.dispatchEvent(new CustomEvent("ftp:ask", { detail: { question, preset } }));
+export function openAsk(question?: string, preset?: AskPreset, send = false) {
+  window.dispatchEvent(new CustomEvent("ftp:ask", { detail: { question, preset, send } }));
 }
 
-interface Seed { question?: string; preset?: AskPreset }
+interface Seed { question?: string; preset?: AskPreset; send?: boolean }
 
 interface Step { n: number; tool: string; title: string; thought: string; result?: AskResult; refused?: string }
 
@@ -114,7 +114,7 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
             [useCtx]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [conv, setConv] = useState<string | null>(null);
-  const [text, setText] = useState(seed?.preset ? "" : seed?.question ?? "");
+  const [text, setText] = useState(seed?.preset || seed?.send ? "" : seed?.question ?? "");
   const seedSent = useRef(false);
   const [lang, setLang] = useState<"en" | "bn">(() =>
     (localStorage.getItem("ftp_ask_lang") as "en" | "bn") || "en");
@@ -190,7 +190,7 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
   // any request in flight, so sending on the first mount lost the answer.
   // The timer is cleared with that first mount and set again by the second.
   useEffect(() => {
-    if (!seed?.preset || !seed.question) return;
+    if (!(seed?.preset || seed?.send) || !seed.question) return;
     const t = setTimeout(() => {
       if (seedSent.current) return;
       seedSent.current = true;

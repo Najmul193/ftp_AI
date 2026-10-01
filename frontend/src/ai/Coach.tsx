@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BookCard } from "./Outlook";
 import { Button, Card, Empty, Grid, MiniButton, Pill } from "../components/ui";
 import { shortDate } from "../format";
 import { useApp, useAsync } from "../state";
@@ -92,6 +93,7 @@ function BranchView({ code, canNote, canAsk }: { code: string; canNote: boolean;
         </Grid>
       </Card>
 
+      <BookCard branch={code} title={`Where ${d.branch.name} is heading`} />
       <Card title="Do this week"
             subtitle="The largest money first. Each is what reaching the peer median would be worth, on this branch's own balances">
         {d.actions.length === 0

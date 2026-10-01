@@ -40,7 +40,7 @@ export function Narrative({ text }: { text: string }) {
 }
 
 /** Read aloud with the browser's own voice: nothing leaves the machine. */
-function useSpeech() {
+export function useSpeech() {
   const [speaking, setSpeaking] = useState(false);
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
   useEffect(() => () => { if (supported) window.speechSynthesis.cancel(); }, [supported]);

@@ -322,6 +322,12 @@ PAGES: dict[str, tuple[str, str]] = {
     "coach": ("Branch coach", "one branch's rank, its gap to its peers' median, and its actions for the week"),
     "outlook": ("Outlook", "forecasts of the book to month-end, market rates 90 days ahead, which way the "
                            "policy rate leans at the next MPC, and our product rates against other banks'"),
+    "pulse": ("Bank pulse", "the bank's health score and its parts, the bank against the industry, "
+                            "the month's forecast, and the top risks and openings"),
+    "scenario": ("Scenario lab", "a what-if on rates, pass-through and balances, and its effect on "
+                                 "bank NII, branch FTP profit and treasury"),
+    "alco": ("ALCO pack", "the monthly asset-liability pack: policy outlook, market forecasts, the "
+                          "book's landing, NII sensitivity, pricing and decisions"),
     "rates": ("Rate configuration", "the FTP benchmark, liquidity and other cost rates in force"),
     "upload": ("Upload", "loading bank data files and their checks"),
     "admin": ("Master data", "the branch and product masters"),

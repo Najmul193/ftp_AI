@@ -272,3 +272,41 @@ def scenario_delete(sid: int, db: DbDep, user: ActiveUser) -> None:
     if row is None or row.user_id != user.id:
         raise HTTPException(404, "not found")
     db.delete(row)
+
+
+# --- the bank's pulse ----------------------------------------------------------------------- #
+
+@router.get("/pulse", dependencies=_view)
+def bank_pulse(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """One score and its parts, against the industry, in the asker's scope."""
+    from app.ai import pulse
+    from app.ai.context.fact_sheet import names as org_names
+    from app.ai.insights.facts import fill_names
+    out = pulse.build(db, scope, engine.Reader(user.id, user.scope_level, user.scope_id),
+                      _scope_label(db, user))
+    names = org_names(db)
+    for k in ("risks", "openings"):
+        for i in out.get(k, []):
+            i["title"] = fill_names(i["title"], names)
+    return out
+
+
+# --- the ALCO pack --------------------------------------------------------------------------- #
+
+@router.get("/alco", dependencies=[*_view, Depends(require("SCENARIO_RUN"))])
+def alco_pack(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    from app.ai import alco
+    return alco.build(db, scope, engine.Reader(user.id, user.scope_level, user.scope_id),
+                      head_office=user.scope_level is ScopeLevel.HO, label=_scope_label(db, user))
+
+
+@router.post("/alco/commentary",
+             dependencies=[*_view, Depends(require("SCENARIO_RUN")), Depends(require("AI_CHAT"))])
+def alco_commentary(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """The model writes the commentary from the masked figures; every number checked."""
+    from app.ai import alco
+    try:
+        return alco.commentary(db, Caller(user.id, user.username), scope)
+    except (gw.AiUnavailable, gw.GatewayBlocked, gw.GatewayError) as exc:
+        raise HTTPException(502, {"code": getattr(exc, "code", "provider"),
+                                  "message": getattr(exc, "message", str(exc))}) from exc
