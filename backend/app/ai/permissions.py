@@ -24,7 +24,9 @@ AI_GRANTS: dict[str, set[str]] = {
     "FTP_APPROVER": {"AI_VIEW", "AI_CHAT"},
     "ANALYST": {"AI_VIEW", "AI_CHAT"},
     "DATA_OPERATOR": {"AI_VIEW"},
-    "VIEWER": {"AI_VIEW"},
+    # Branch managers ask about their own branch: every query runs in the
+    # asker's scope, so a branch user cannot reach another branch's figures.
+    "VIEWER": {"AI_VIEW", "AI_CHAT"},
     "AUDITOR": {"AI_VIEW", "AI_AUDIT"},
 }
 

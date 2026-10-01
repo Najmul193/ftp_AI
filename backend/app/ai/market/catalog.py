@@ -16,9 +16,9 @@ class Series:
     code: str
     name: str
     short: str
-    category: str       # bd_policy | bd_money | bd_govt | fx | global_rates | commodity
+    category: str       # bd_policy | bd_money | bd_govt | bd_industry | fx | global_rates | commodity
     unit: str           # pct | bdt | usd | index
-    source: str         # bb_paste | exchangerate_api | fred
+    source: str         # bb_paste | bb_public | exchangerate_api | fred
     tenor_days: int | None = None
     #: The upstream id where the source has one (FRED series id, currency code).
     upstream: str | None = None
@@ -64,6 +64,13 @@ SERIES: tuple[Series, ...] = (
            "bb_paste", 5475, stale_after_days=60),
     Series("BB_TBOND_20Y", "20-year treasury bond, cut-off yield", "T-bond 20Y", "bd_govt", "pct",
            "bb_paste", 7300, stale_after_days=60),
+    # --- The banking industry, monthly (Bangladesh Bank's interest-rate page)
+    Series("BD_IND_DEPOSIT", "Scheduled banks' weighted average deposit rate", "Industry deposit rate",
+           "bd_industry", "pct", "bb_public", stale_after_days=75),
+    Series("BD_IND_ADVANCE", "Scheduled banks' weighted average lending rate", "Industry lending rate",
+           "bd_industry", "pct", "bb_public", stale_after_days=75),
+    Series("BD_IND_SPREAD", "Scheduled banks' interest rate spread", "Industry spread",
+           "bd_industry", "pct", "bb_public", stale_after_days=75),
     # --- Foreign exchange (market mid, not Bangladesh Bank's official rate)
     Series("FX_USDBDT", "US dollar in taka", "USD/BDT", "fx", "bdt", "exchangerate_api",
            upstream="USD", stale_after_days=3),
@@ -92,3 +99,29 @@ BY_CODE: dict[str, Series] = {s.code: s for s in SERIES}
 
 #: Series treasury enters (pasted or typed): the only ones the entry API accepts.
 MANUAL = frozenset(s.code for s in SERIES if s.source == "bb_paste")
+
+
+@dataclass(frozen=True)
+class MacroSeries:
+    code: str
+    name: str
+    #: pct | usd_bn
+    unit: str
+    worldbank: str | None = None
+    imf: str | None = None
+
+
+#: Annual figures for Bangladesh: outturns from the World Bank, outturns and
+#: projections from the IMF's World Economic Outlook (DataMapper).
+MACRO: tuple[MacroSeries, ...] = (
+    MacroSeries("BD_CPI", "Inflation, consumer prices (% a year)", "pct",
+                worldbank="FP.CPI.TOTL.ZG", imf="PCPIPCH"),
+    MacroSeries("BD_GDP", "Real GDP growth (%)", "pct", worldbank="NY.GDP.MKTP.KD.ZG",
+                imf="NGDP_RPCH"),
+    MacroSeries("BD_CA", "Current account balance (% of GDP)", "pct", imf="BCA_NGDPD"),
+    MacroSeries("BD_M2", "Broad money growth (%)", "pct", worldbank="FM.LBL.BMNY.ZG"),
+    MacroSeries("BD_REMIT", "Personal remittances received (USD bn)", "usd_bn",
+                worldbank="BX.TRF.PWKR.CD.DT"),
+    MacroSeries("BD_RESERVES", "Total reserves (USD bn)", "usd_bn", worldbank="FI.RES.TOTL.CD"),
+)
+MACRO_BY_CODE: dict[str, MacroSeries] = {m.code: m for m in MACRO}

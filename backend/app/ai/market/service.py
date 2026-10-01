@@ -22,7 +22,10 @@ from app.ai.config import ai_settings
 from app.ai.market import catalog, paste, sources
 from app.ai.market.news_tags import tag
 from app.ai.market.tenor import curve_rate, infer_tenor_days
-from app.ai.models import Brief, Conversation, Insight, JobRun, MarketNews, MarketObservation, MarketSeries
+from app.ai.models import (
+    Brief, Conversation, Insight, JobRun, Macro, MarketNews, MarketObservation, MarketSeries,
+    PeerFinancial, PeerRate,
+)
 from app.domain.errors import DomainError
 from app.models import AggDailyProduct, Product
 from app.repositories.rates import RateBook
@@ -87,16 +90,30 @@ class HumanValueDiffers(Exception):
 
 # --- collectors -------------------------------------------------------------- #
 
+def bb_gate(db: Session, *, manual: bool = False) -> str | None:
+    """Why Bangladesh Bank should not be read now, or None when it may be.
+
+    A person pressing a button may read it any time; the schedule reads it
+    only in Dhaka business hours, and not for a day after any job of this
+    module was asked for a human there."""
+    if manual:
+        return None
+    now = datetime.now(DHAKA)
+    if now.weekday() in BB_WEEKEND or not (BB_HOURS[0] <= now.time() <= BB_HOURS[1]):
+        return "outside Dhaka business hours"
+    blocked_at = db.scalar(select(func.max(JobRun.started_at))
+                           .where(JobRun.job.in_(("market_bb", "public_data")),
+                                  JobRun.status == "blocked"))
+    if blocked_at and datetime.now(timezone.utc) - blocked_at < BB_BACKOFF:
+        return "paused after Bangladesh Bank asked for human verification"
+    return None
+
+
 def collect_bb(db: Session, *, manual: bool = False) -> dict:
     """Read Bangladesh Bank's rate pages, politely, and store what they say."""
-    now = datetime.now(DHAKA)
-    if not manual:
-        if now.weekday() in BB_WEEKEND or not (BB_HOURS[0] <= now.time() <= BB_HOURS[1]):
-            return {"skipped": "outside Dhaka business hours"}
-        blocked_at = db.scalar(select(func.max(JobRun.started_at))
-                               .where(JobRun.job == "market_bb", JobRun.status == "blocked"))
-        if blocked_at and datetime.now(timezone.utc) - blocked_at < BB_BACKOFF:
-            return {"skipped": "paused after Bangladesh Bank asked for human verification"}
+    why_not = bb_gate(db, manual=manual)
+    if why_not:
+        return {"skipped": why_not}
     ids = sync_catalog(db)
     out: dict = {"pages": {}, "errors": [], "differences": []}
     for i, (name, url) in enumerate(sources.BB_PAGES.items()):
@@ -188,6 +205,12 @@ def collect_news(db: Session) -> dict:
     return {"seen": seen, "added": added, "errors": errors}
 
 
+def months_back(today: date, months: int) -> date:
+    """The first day of the month `months` before today's month."""
+    k = today.year * 12 + (today.month - 1) - months
+    return date(k // 12, k % 12 + 1, 1)
+
+
 def prune(db: Session) -> dict:
     def gone(stmt) -> int:
         return int(getattr(db.execute(stmt), "rowcount", 0) or 0)
@@ -200,6 +223,20 @@ def prune(db: Session) -> dict:
     b = gone(delete(Brief).where(Brief.created_at < now - timedelta(days=90)))
     # Threads older than the retention period go with their messages.
     c = gone(delete(Conversation).where(Conversation.updated_at < now - timedelta(days=90)))
+    # Public data: bounded history, so the tables stop growing.
+    cfg = ai_settings()
+    today = date.today()
+    newest = select(MarketObservation.series_id, func.max(MarketObservation.obs_date)
+                    .label("d")).group_by(MarketObservation.series_id).subquery()
+    obs_cut = today - timedelta(days=365 * cfg.AI_MARKET_HISTORY_YEARS)
+    o = gone(delete(MarketObservation).where(
+        MarketObservation.obs_date < obs_cut,
+        ~select(newest.c.series_id).where(newest.c.series_id == MarketObservation.series_id,
+                                          newest.c.d == MarketObservation.obs_date).exists()))
+    pr = gone(delete(PeerRate).where(PeerRate.month < months_back(today, cfg.AI_PEER_RATES_MONTHS)))
+    pf = gone(delete(PeerFinancial).where(
+        PeerFinancial.period_end < today - timedelta(days=365 * cfg.AI_PEER_FINANCIALS_YEARS)))
+    mc = gone(delete(Macro).where(Macro.year < today.year - cfg.AI_MACRO_YEARS))
     # The egress log refuses deletes unless this transaction says it is the
     # retention job.
     db.execute(text("SET LOCAL ai.retention_purge = 'on'"))
@@ -207,7 +244,8 @@ def prune(db: Session) -> dict:
     r = gone(text("DELETE FROM ai_requests WHERE created_at < now() - make_interval(days => :d)")
              .bindparams(d=days))
     return {"news": n, "job_runs": j, "insights": i, "briefs": b, "conversations": c,
-            "ai_requests": r}
+            "ai_requests": r, "market_observations": o, "peer_rates": pr,
+            "peer_financials": pf, "macro": mc}
 
 
 # --- treasury entries -------------------------------------------------------- #

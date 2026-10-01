@@ -179,6 +179,10 @@ function Providers({ settings, presets, editable, onDone, onFail }: {
             <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
               <Pill tone={tierTone(p.max_data_tier)}>{p.max_data_tier.toLowerCase()}</Pill>
               {p.is_free_tier && <Pill tone="warning">free tier</Pill>}
+              <span title={p.agentic ? "Ask FTP chains several lookups with this model"
+                                     : "Ask FTP answers from one lookup with this model"}>
+                <Pill tone={p.agentic ? "good" : "neutral"}>
+                  {p.agentic ? "multi-step" : "single-step"}</Pill></span>
             </span>) },
           { key: "key", label: "Key", render: (p) => p.has_key
             ? <span className="tnum">•••• {p.key_last4}</span>
@@ -235,6 +239,8 @@ function EditProvider({ p, preset, onClose, onDone, onFail }: {
   const [ack, setAck] = useState(false);
   const [key, setKey] = useState("");
   const [budget, setBudget] = useState(String(p.daily_token_budget));
+  const [agentic, setAgentic] = useState<"auto" | "on" | "off">(
+    p.agentic_override == null ? "auto" : p.agentic_override ? "on" : "off");
   const [busy, setBusy] = useState(false);
   const needsAck = free && tier !== "PUBLIC" && !preset?.local && !p.trial_ack_at;
 
@@ -243,7 +249,7 @@ function EditProvider({ p, preset, onClose, onDone, onFail }: {
     try {
       await aiApi.updateProvider(p.id, {
         model, max_data_tier: tier, is_free_tier: free, trial_ack: ack,
-        daily_token_budget: Number(budget) || 0, ...(key ? { api_key: key } : {}),
+        daily_token_budget: Number(budget) || 0, ...(key ? { api_key: key } : {}), agentic,
       });
       onDone(`${p.label} updated.${key ? " Test it before relying on the new key." : ""}`);
     } catch (e) { onFail(e); } finally { setBusy(false); }
@@ -269,6 +275,17 @@ function EditProvider({ p, preset, onClose, onDone, onFail }: {
           <input style={field} inputMode="numeric" value={budget}
                  onChange={(e) => setBudget(e.target.value.replace(/\D/g, ""))} />
           <p style={hint}>0 means unlimited.</p>
+        </label>
+        <label><span style={label}>Ask FTP reasoning</span>
+          <select style={field} value={agentic}
+                  onChange={(e) => setAgentic(e.target.value as "auto" | "on" | "off")}>
+            <option value="auto">Automatic, by model ({p.agentic_override == null
+              ? (p.agentic ? "multi-step" : "single-step") : "re-checked on save"})</option>
+            <option value="on">Multi-step: chain lookups, forecasts and scenarios</option>
+            <option value="off">Single-step: one lookup per question</option>
+          </select>
+          <p style={hint}>Multi-step needs a capable model; small local models answer better
+            single-step.</p>
         </label>
       </Grid>
       <TierPicker value={tier} onChange={setTier} />

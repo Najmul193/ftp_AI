@@ -31,6 +31,10 @@ export interface Provider {
   max_data_tier: Tier; is_free_tier: boolean; trial_ack_at: string | null;
   status: "ok" | "failed" | "untested"; status_detail: string | null;
   last_tested_at: string | null; daily_token_budget: number; tokens_today?: number;
+  /** The copilot may chain several lookups with this model. */
+  agentic: boolean;
+  /** null: decided from the model's name; true/false: an administrator chose. */
+  agentic_override: boolean | null;
 }
 
 export interface Policy {
@@ -92,7 +96,7 @@ export const aiApi = {
     request<ProbeResult>("/ai/providers/probe", { method: "POST", ...json(b) }),
   createProvider: (b: NewProvider) =>
     request<{ provider: Provider; test: ProbeResult }>("/ai/providers", { method: "POST", ...json(b) }),
-  updateProvider: (id: number, b: Partial<NewProvider>) =>
+  updateProvider: (id: number, b: Partial<NewProvider> & { agentic?: "auto" | "on" | "off" }) =>
     request<{ provider: Provider }>(`/ai/providers/${id}`, { method: "PATCH", ...json(b) }),
   deleteProvider: (id: number) => request<void>(`/ai/providers/${id}`, { method: "DELETE" }),
   testProvider: (id: number) =>

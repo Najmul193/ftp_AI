@@ -56,6 +56,9 @@ class AiProvider(AiBase):
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: 0 means unlimited.
     daily_token_budget: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    #: May the copilot let this model chain several lookups? None: decided
+    #: from the model's name (`providers.base.agentic_default`).
+    agentic: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[int | None] = mapped_column(Integer)
@@ -300,4 +303,54 @@ class Pin(AiBase):
     question: Mapped[str] = mapped_column(Text)
     plan: Mapped[dict] = mapped_column(JSONB)
     where: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PeerRate(AiBase):
+    """One bank's posted rate for one product in one month, from Bangladesh
+    Bank's bank-by-bank tables. A single rate has low == high."""
+
+    __tablename__ = "ai_peer_rates"
+    __table_args__ = (UniqueConstraint("month", "bank", "book", "product"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    month: Mapped[date] = mapped_column(Date)
+    bank: Mapped[str] = mapped_column(String(40))
+    bank_group: Mapped[str] = mapped_column(String(10))
+    book: Mapped[str] = mapped_column(String(10))
+    product: Mapped[str] = mapped_column(String(40))
+    rate_low: Mapped[Decimal] = mapped_column(Numeric(8, 4))
+    rate_high: Mapped[Decimal] = mapped_column(Numeric(8, 4))
+    source_ref: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Macro(AiBase):
+    """An annual macro figure for Bangladesh: an outturn or a projection."""
+
+    __tablename__ = "ai_macro"
+    __table_args__ = (UniqueConstraint("code", "year", "source"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    code: Mapped[str] = mapped_column(String(40))
+    year: Mapped[int] = mapped_column(SmallInteger)
+    value: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    source: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(12))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PeerFinancial(AiBase):
+    """A peer bank's reported figure for a quarter, entered by head office."""
+
+    __tablename__ = "ai_peer_financials"
+    __table_args__ = (UniqueConstraint("bank", "period_end", "metric"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    bank: Mapped[str] = mapped_column(String(40))
+    period_end: Mapped[date] = mapped_column(Date)
+    metric: Mapped[str] = mapped_column(String(30))
+    value: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    source_ref: Mapped[str | None] = mapped_column(Text)
+    entered_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

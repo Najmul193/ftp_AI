@@ -219,6 +219,8 @@ class ProviderPatch(BaseModel):
     is_free_tier: bool | None = None
     trial_ack: bool = False
     daily_token_budget: int | None = Field(None, ge=0)
+    #: Let the copilot chain lookups with this model: auto decides by its name.
+    agentic: Literal["auto", "on", "off"] | None = None
 
 
 @router.patch("/providers/{pid}")
@@ -728,3 +730,9 @@ def upload_review(batch_ref: str, db: DbDep) -> dict:
     if r is None:
         raise HTTPException(404, f"no batch {batch_ref}")
     return r
+
+
+# The copilot's intelligence routes: public data, outlook, scenarios.
+from app.ai.api_intel import router as _intel  # noqa: E402 - after this module's routes
+
+router.include_router(_intel)

@@ -33,6 +33,13 @@ class AiSettings(BaseSettings):
     AI_HTTP_TIMEOUT: float = 60.0
     #: Days the egress log is kept before the retention job may purge it.
     AI_REQUEST_RETENTION_DAYS: int = 365
+    #: How long public data is kept; the daily prune job deletes anything
+    #: older, so the tables stop growing. A series' latest value is always
+    #: kept, however old (a policy rate can stand for a year).
+    AI_MARKET_HISTORY_YEARS: int = 10
+    AI_PEER_RATES_MONTHS: int = 36
+    AI_PEER_FINANCIALS_YEARS: int = 5
+    AI_MACRO_YEARS: int = 30
 
     @field_validator("AI_KEY_ENCRYPTION_KEY")
     @classmethod

@@ -17,6 +17,7 @@ from app.ai import crypto
 from app.ai.gateway.policy import FieldPolicy, Tier
 from app.ai.models import AiProvider
 from app.ai.presets import PRESETS, validate_base_url
+from app.ai.providers.base import agentic_default
 from app.core.config import settings as core
 from app.models import SystemSetting
 from app.services import audit
@@ -118,7 +119,15 @@ def _public(p: AiProvider) -> dict:
         "status": p.status, "status_detail": p.status_detail,
         "last_tested_at": p.last_tested_at.isoformat() if p.last_tested_at else None,
         "daily_token_budget": p.daily_token_budget,
+        # Whether the copilot chains lookups with this model, and whether that
+        # was an administrator's choice or read from the model's name.
+        "agentic": is_agentic(p),
+        "agentic_override": p.agentic,
     }
+
+
+def is_agentic(p: AiProvider) -> bool:
+    return p.agentic if p.agentic is not None else agentic_default(p.kind, p.model)
 
 
 public = _public
@@ -183,9 +192,13 @@ def create_provider(db: Session, actor: Actor, *, brand: str, model: str,
 def update_provider(db: Session, actor: Actor, pid: int, *, model: str | None = None,
                     api_key: str | None = None, label: str | None = None,
                     max_data_tier: str | None = None, is_free_tier: bool | None = None,
-                    trial_ack: bool = False, daily_token_budget: int | None = None) -> AiProvider:
+                    trial_ack: bool = False, daily_token_budget: int | None = None,
+                    agentic: str | None = None) -> AiProvider:
     p = get_provider(db, pid)
     before = _public(p)
+    if agentic is not None:
+        # "auto" hands the decision back to the model's name.
+        p.agentic = {"auto": None, "on": True, "off": False}[agentic]
     if model:
         p.model = model.strip()
     if label:

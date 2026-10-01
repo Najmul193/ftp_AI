@@ -193,10 +193,18 @@ class Blocked(SourceError):
     """The site asked for a human. Respect it: stop, and let a person paste."""
 
 
-def bb_page(url: str, transport: httpx.BaseTransport | None = None) -> str:
-    """A Bangladesh Bank page as plain text, one cell per line."""
-    from bs4 import BeautifulSoup
+#: Public-data pages: the bank-by-bank rate tables, the industry's monthly
+#: averages, and the home page's policy-rate box.
+BB_PUBLIC: dict[str, str] = {
+    "home": "https://www.bb.org.bd/en/index.php",
+    "deposit": "https://www.bb.org.bd/en/index.php/financialactivity/interestdeposit",
+    "lending": "https://www.bb.org.bd/en/index.php/financialactivity/interestlending",
+    "industry": "https://www.bb.org.bd/en/index.php/econdata/intrate",
+}
 
+
+def bb_html(url: str, transport: httpx.BaseTransport | None = None) -> str:
+    """A Bangladesh Bank page's HTML; `Blocked` if it asks for a human."""
     try:
         with httpx.Client(timeout=TIMEOUT, follow_redirects=True,
                           headers={"User-Agent": UA}, transport=transport) as c:
@@ -208,7 +216,52 @@ def bb_page(url: str, transport: httpx.BaseTransport | None = None) -> str:
     if "human visitor" in body or "TSPD" in body or "enable JavaScript to view" in body:
         raise Blocked("Bangladesh Bank asked for human verification; automatic collection "
                       "paused -- paste the page instead")
+    return body
+
+
+def html_text(body: str) -> str:
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(body, "html.parser")
     for x in soup(["script", "style", "noscript"]):
         x.decompose()
     return soup.get_text("\n", strip=True)
+
+
+def bb_page(url: str, transport: httpx.BaseTransport | None = None) -> str:
+    """A Bangladesh Bank page as plain text, one cell per line."""
+    from bs4 import BeautifulSoup
+
+    body = bb_html(url, transport)
+    soup = BeautifulSoup(body, "html.parser")
+    for x in soup(["script", "style", "noscript"]):
+        x.decompose()
+    return soup.get_text("\n", strip=True)
+
+
+# --- World Bank and IMF: Bangladesh's macro outturns and projections ---------- #
+
+def worldbank(indicator: str, transport: httpx.BaseTransport | None = None):
+    """The raw World Bank v2 JSON for one Bangladesh indicator, last 15 years."""
+    try:
+        with httpx.Client(timeout=TIMEOUT, headers={"User-Agent": UA}, transport=transport) as c:
+            r = c.get(f"https://api.worldbank.org/v2/country/BGD/indicator/{indicator}",
+                      params={"format": "json", "per_page": 15})
+            r.raise_for_status()
+            return r.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise SourceError(f"World Bank {indicator}: {exc}") from exc
+
+
+def imf(indicator: str, transport: httpx.BaseTransport | None = None):
+    """The raw IMF DataMapper JSON for one indicator.
+
+    Like FRED, the IMF's edge refuses unfamiliar user agents, so this uses the
+    library's own (which still names the client honestly)."""
+    try:
+        with httpx.Client(timeout=TIMEOUT, transport=transport) as c:
+            r = c.get(f"https://www.imf.org/external/datamapper/api/v1/{indicator}/BGD")
+            r.raise_for_status()
+            return r.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise SourceError(f"IMF {indicator}: {exc}") from exc
