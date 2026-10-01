@@ -270,3 +270,11 @@ def test_dates_written_with_typographic_hyphens_are_still_dates():
     g = grounding.check("The period covered is 2026‑09‑03 to 2026‑09‑23, and 03 Sep‑23 Sep 2026; NIM 8.89%.",
                         [Decimal("8.89")])
     assert g.ok, g.unverified
+
+
+def test_amounts_in_text_are_blurred_to_three_figures():
+    t = generalize.blur_amounts("{PRD:TDR12} pays 108 bp under (৳181.28 crore exposed); "
+                                "costs ৳16.09 lakh a month; fee ৳5,80,123; down -৳2.5 lakh")
+    assert "181.28" not in t and "181 cr" in t
+    assert "16.1 lakh" in t and "5.8 lakh" in t and "-2.5 lakh" in t
+    assert "108 bp" in t and "{PRD:TDR12}" in t

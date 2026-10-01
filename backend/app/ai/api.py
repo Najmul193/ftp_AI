@@ -590,6 +590,8 @@ class ContextIn(BaseModel):
     filters: dict = Field(default_factory=dict)
     #: Page-specific: the branch open in the coach.
     branch: str | None = Field(None, max_length=10)
+    #: Page-specific: the scenario lab's settings on screen (checked server-side).
+    scenario: dict | None = None
 
 
 class AskIn(BaseModel):

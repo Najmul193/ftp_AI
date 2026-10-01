@@ -86,6 +86,7 @@ function useContextLine() {
   const extra = pageExtra();
   const bits: string[] = [];
   if (page === "coach" && extra.branchLabel) bits.push(extra.branchLabel);
+  if (page === "scenario" && extra.scenarioLabel) bits.push(extra.scenarioLabel);
   const f = filters as Record<string, unknown>;
   if (f.date_from && f.date_to) bits.push(`${shortDate(String(f.date_from))}–${shortDate(String(f.date_to))}`);
   if (f.division_id) bits.push(`${divisions.find((d) => d.id === f.division_id)?.name ?? "one"} division`);
@@ -102,7 +103,8 @@ function useContextLine() {
   }
   if (f.side) bits.push(f.side === "ASSET" ? "loans" : "deposits");
   if (f.branch_category) bits.push(String(f.branch_category).replace("_", "-").toLowerCase() + " branches");
-  return { page, label: PAGE_LABELS[page] ?? page, bits, filters: f, branch: extra.branch };
+  return { page, label: PAGE_LABELS[page] ?? page, bits, filters: f, branch: extra.branch,
+           scenario: page === "scenario" ? extra.scenario : undefined };
 }
 
 function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
@@ -154,7 +156,10 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
     setTurns((ts) => [...ts, { question: q, status: "Sending" }]);
     abort.current = new AbortController();
     try {
-      const context = useCtx ? { page: ctx.page, filters: ctx.filters, branch: ctx.branch } : undefined;
+      // Read the page at the moment of asking: a slider moved since opening counts.
+      const now = pageExtra();
+      const context = useCtx ? { page: ctx.page, filters: ctx.filters, branch: ctx.branch,
+                                 scenario: ctx.page === "scenario" ? now.scenario : undefined } : undefined;
       await askApi.ask({ question: q, conversation_id: conv, lang, preset, context }, (e) => {
         switch (e.type) {
           case "start": setConv(e.conversation_id); patch((t) => ({ ...t, sent: e.sent })); break;
@@ -179,7 +184,15 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
       if ((err as Error).name !== "AbortError")
         patch((t) => ({ ...t, stop: { kind: "error", text: (err as Error).message } }));
     } finally {
-      patch((t) => ({ ...t, done: true, status: undefined }));
+      // A stream that ends with neither an answer nor a reason (the server
+      // restarted, the network dropped) must not leave a silent card.
+      patch((t) => ({
+        ...t, done: true, status: undefined,
+        stop: t.stop ?? (!t.answer && !t.messageId
+          ? { kind: "error", text: "The answer was interrupted before it was written (the connection "
+                                   + "closed). Ask again; the lookups are quick to repeat." }
+          : undefined),
+      }));
       setBusy(false);
       input.current?.focus();
     }
@@ -430,6 +443,8 @@ function TurnView({ t, onPin, onAsk }: { t: Turn; onPin: () => void; onAsk?: (q:
             </Pill>{" "}{t.stop.text}
           </p>)}
         {a?.note && <p style={{ ...muted, margin: 0 }}><Pill tone="warning">No write-up</Pill> {a.note}</p>}
+        {t.done && onAsk && (t.stop?.kind === "error" || a?.note) && (
+          <div><MiniButton icon="refresh" onClick={() => onAsk(t.question)}>Ask again</MiniButton></div>)}
         {t.status && !t.done && (
           <div style={{ ...muted, display: "flex", alignItems: "center", gap: 8 }}>
             <Icon name="sparkle" size={13} />{t.status}…</div>)}

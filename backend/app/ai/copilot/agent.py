@@ -81,7 +81,7 @@ def narrator_system(lang: str) -> str:
             "platform. The platform ran several lookups; their tables are shown beside your answer. "
             "Answer the banker's question from them.\nRules:\n"
             "- Use only numbers that appear in the RESULTs, written the same way (you may round a "
-            "rate). Amounts are BDT, marked cr (crore) or lakh: keep the unit as given. Never compute new figures.\n"
+            "rate). Amounts are BDT, marked cr (crore), lakh or taka: keep the unit as given. Never compute new figures.\n"
             "- Tokens like BR_K7Q, DIV_2MX, PRD_9QX stand for names you are not shown; copy them "
             "exactly.\n"
             "- Lead with the direct answer in one sentence. Then connect the results -- what drives "
@@ -213,8 +213,12 @@ def ask(a: chat.Asker, question: str, conversation_id: str | None, lang: str,
 
         page = chat.page_context(db, context)
         ctx = chat._context(db, a, vault, state.policy, history, page, resolver)
+        notes, facts_segs = chat.page_facts(db, a, page, resolver)
+        if notes:
+            ctx += "\n" + notes
         system = agent_system()
-        convo: list[Turn] = [Turn("user", [Segment("instruction", ctx), Segment("user", masked_q)])]
+        convo: list[Turn] = [Turn("user", [Segment("instruction", ctx), *facts_segs,
+                                           Segment("user", masked_q)])]
         steps: list[tuple[Plan, dict | None, str]] = []      # plan, result json, masked text
         wheres: list[dict] = []
         seen: set[str] = set()
@@ -315,14 +319,14 @@ def ask(a: chat.Asker, question: str, conversation_id: str | None, lang: str,
         if ran:
             first = ran[0][1]
             msg.result = {**first, "steps": [{"tool": p.tool, "result": rj} for p, rj, _ in ran]}
-        if not ran and not explain:
+        if not ran and not explain and not facts_segs:
             reason = next((t for _, rj, t in steps if rj is None), "Nothing could be looked up.")
             yield from stop("refused", reason.removeprefix("REFUSED: "), "refused")
             return
 
         # Narrate everything together.
         yield {"type": "status", "text": "Writing the answer"}
-        segs = [Segment("user", masked_q)]
+        segs = [*facts_segs, Segment("user", masked_q)]
         for i, (p, _, t) in enumerate(ran, start=1):
             kind = "public" if p.tool in PUBLIC_TOOLS else "bank"
             segs.append(Segment(kind, f"RESULT {i} ({p.tool}):\n{t}"))
@@ -337,7 +341,7 @@ def ask(a: chat.Asker, question: str, conversation_id: str | None, lang: str,
         facts = None
         if not explain:
             facts = [v for _, v, _ in numbers_in(masked_q)]
-            for _, _, t in ran:
+            for t in [*(x.text for x in facts_segs), *(t for _, _, t in ran)]:
                 facts += differences_by_line(t)
         try:
             r = gw.call(db, a.caller, GatewayRequest(

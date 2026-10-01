@@ -13,6 +13,7 @@ PURE: no I/O.
 
 from __future__ import annotations
 
+import re
 from decimal import ROUND_HALF_EVEN, Decimal
 from enum import Enum
 
@@ -53,6 +54,8 @@ def crore(amount: Decimal | float | int, digits: int = 3) -> str:
     under one crore, where "0.00654 cr" would be unreadable. Either way three
     significant figures: no more exact, no more a fingerprint."""
     a = Decimal(str(amount))
+    if a and abs(a) < LAKH:
+        return f"{_plain(sig(a, digits))} taka"
     if a and abs(a) < CRORE:
         return f"{_plain(sig(a / LAKH, digits))} lakh"
     return f"{_plain(sig(a / CRORE, digits))} cr"
@@ -91,3 +94,17 @@ def amount(value: Decimal | float | int, mode: AmountMode = AmountMode.CRORE_3SF
     if mode is AmountMode.INDEX:
         raise ValueError("index mode applies to a set of values; call index()")
     return crore(value)
+
+
+_AMOUNT = re.compile(r"-?৳\s?([\d,]+(?:\.\d+)?)\s*(crore|lakh)?", re.I)
+
+
+def blur_amounts(text: str) -> str:
+    """Amounts written for people ("৳181.28 crore", "৳5,80,000") as a
+    provider may see them: 3 significant figures, in crore or lakh."""
+    def sub(m: re.Match) -> str:
+        v = Decimal(m.group(1).replace(",", ""))
+        unit = (m.group(2) or "").lower()
+        v = v * (CRORE if unit == "crore" else LAKH if unit == "lakh" else 1)
+        return ("-" if m.group(0).startswith("-") else "") + crore(v)
+    return _AMOUNT.sub(sub, text)

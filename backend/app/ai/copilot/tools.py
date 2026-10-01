@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.context import fact_sheet as sheet
+from app.ai.gateway.generalize import blur_amounts
 from app.ai.copilot.catalog import INTEL_TOOLS, METRICS, Plan, prior, window
 from app.ai.copilot.result import (
     Column, Result, change_facts, chart_for, compute, metric_columns, passes,
@@ -386,7 +387,8 @@ def benchmarks_tool(db: Session, plan: Plan) -> Result:
 
 def insights_tool(db: Session, reader: engine.Reader, names: dict[str, str]) -> Result:
     from app.ai.insights.facts import fill_names
-    rows = [{"label": fill_names(i.title, names), "ent": i.title, "severity": i.severity,
+    # The person reads the exact title; the provider's copy has its amounts blurred.
+    rows = [{"label": fill_names(i.title, names), "ent": blur_amounts(i.title), "severity": i.severity,
              "money": i.money_at_stake, "basis": i.money_basis}
             for i, _ in engine.feed(db, reader, limit=25)]
     cols = [Column("label", "Finding", "text"), Column("severity", "Level", "text"),

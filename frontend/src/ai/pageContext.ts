@@ -4,7 +4,11 @@
  *  page knows -- which branch the coach has open. A page sets it while mounted
  *  and clears it on the way out, so a question never inherits a stale branch. */
 
-export interface PageExtra { branch?: string; branchLabel?: string }
+export interface PageExtra {
+  branch?: string; branchLabel?: string;
+  /** The scenario lab's settings on screen, and a few words for the context line. */
+  scenario?: Record<string, unknown>; scenarioLabel?: string;
+}
 
 let extra: PageExtra = {};
 

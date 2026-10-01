@@ -147,7 +147,7 @@ def _masked(view: dict, c: Coaching, token_branch: str, token_peers: str) -> str
     lines = [f"BRANCH: {token_branch}, compared with the {view['peers']['count']} branches of "
              f"{token_peers} (its peer group).",
              f"WEEK: {p['start']} to {p['end']}, compared with {p['prior_start']} to {p['prior_end']}.",
-             "Amounts in BDT, cr (crore) or lakh as marked, 3 significant figures; rates in % a year."]
+             "Amounts in BDT, cr (crore), lakh or taka as marked, 3 significant figures; rates in % a year."]
     r = view["rank"]
     if r["profit"]:
         lines.append(f"- FTP profit rank: {r['profit'][0]} of {r['profit'][1]} branches"

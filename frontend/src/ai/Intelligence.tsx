@@ -7,6 +7,7 @@ import {
   BenchmarkRow, marketApi, MarketOverview, MarketSeries, NewsItem, ParseResult,
 } from "./api";
 import BriefCard from "./Brief";
+import HomeCard from "./HomeCard";
 import InsightFeed from "./Insights";
 import PinnedAnswers from "./Pins";
 
@@ -101,6 +102,7 @@ export default function Intelligence() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <HomeCard />
       <BriefCard />
       <PinnedAnswers />
       <InsightFeed focus={focus} />

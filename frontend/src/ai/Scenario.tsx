@@ -3,6 +3,7 @@ import Chart, { axisCommon, baseOption, useTokens } from "../components/Chart";
 import { Button, Card, Empty, Grid, MiniButton, Pill, Table } from "../components/ui";
 import { compact } from "../format";
 import { useApp } from "../state";
+import { clearPageExtra, setPageExtra } from "./pageContext";
 import {
   ScenarioGroup, ScenarioParams, ScenarioPreset, ScenarioResult, scenarioApi,
 } from "./api";
@@ -93,6 +94,19 @@ export default function Scenario() {
     }, 250);
     return () => window.clearTimeout(t);
   }, [s]);
+
+  // Ask FTP reads the scenario on screen: "and if loans pass 90%?" builds on it.
+  useEffect(() => {
+    if (!s) return;
+    const bits = [s.market_bp ? `market ${s.market_bp > 0 ? "+" : ""}${s.market_bp} bp` : "",
+                  s.competitor_bp ? `other banks ${s.competitor_bp > 0 ? "+" : ""}${s.competitor_bp} bp` : "",
+                  Object.keys(s.product_rate_bp).length ? `${Object.keys(s.product_rate_bp).length} product rate change(s)` : "",
+                  s.deposit_growth_pct ? `deposits ${s.deposit_growth_pct > 0 ? "+" : ""}${s.deposit_growth_pct}%` : "",
+                  `${s.horizon_months} mo`].filter(Boolean);
+    setPageExtra({ scenario: s as unknown as Record<string, unknown>,
+                   scenarioLabel: `scenario: ${bits.join(", ")}` });
+  }, [s]);
+  useEffect(() => () => clearPageExtra(), []);
 
   const set = (patch: Partial<ScenarioParams>) => { setS((x) => (x ? { ...x, ...patch } : x)); setActive(null); };
 

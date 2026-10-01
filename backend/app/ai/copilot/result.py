@@ -227,7 +227,7 @@ def masked_text(res: Result, resolve: Callable[[str, str], str], *, max_rows: in
         if p.get("prior_start"):
             line += f", compared with {p['prior_start']} to {p['prior_end']}"
         out.append(line)
-    out.append("Amounts in BDT, cr (crore) or lakh as marked, 3 significant figures; rates in % a year.")
+    out.append("Amounts in BDT, cr (crore), lakh or taka as marked, 3 significant figures; rates in % a year.")
     cols = [c for c in res.columns if c.key != "label"]
 
     def row_text(r: dict) -> str:

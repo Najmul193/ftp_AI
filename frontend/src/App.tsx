@@ -21,7 +21,6 @@ import Bell from "./ai/Bell";
 import AskLauncher from "./ai/Ask";
 import Coach from "./ai/Coach";
 import Outlook from "./ai/Outlook";
-import HomeCard from "./ai/HomeCard";
 import Pulse from "./ai/Pulse";
 import AlcoPack from "./ai/AlcoPack";
 import Scenario from "./ai/Scenario";
@@ -261,7 +260,6 @@ function Shell() {
             <p style={{ margin: "2px 0 0", fontSize: "var(--fs-base)",
                         color: "var(--text-secondary)" }}>{page.desc}</p>
           </header>}
-          {view === "basic" && ai?.enabled && ai.can_view && <HomeCard />}
           <Current />
         </div>
 
@@ -348,7 +346,7 @@ function Sidebar({ items, view, rail, drawer = false, onClose }: {
 
       <nav aria-label="Main" style={{ flex: 1, padding: rail ? "12px 10px" : "8px 12px",
                                        overflowY: "auto" }}>
-        {["Intelligence", "Analyse", "Operate"].map((group) => {
+        {["Analyse", "Intelligence", "Operate"].map((group) => {
           const groupItems = items.filter((n) => n.group === group);
           if (!groupItems.length) return null;
           return (

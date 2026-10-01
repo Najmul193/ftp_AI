@@ -326,7 +326,10 @@ export interface PinTile { id: number; title: string; question: string; result: 
 const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "/api/v1";
 
 /** The page a question is asked on, what it is filtered to, and (coach) its branch. */
-export interface AskContext { page: string; filters: Record<string, unknown>; branch?: string }
+export interface AskContext {
+  page: string; filters: Record<string, unknown>; branch?: string;
+  scenario?: Record<string, unknown>;
+}
 
 /** A plan built by a page (a "Why?" button), with the page's filters. */
 export interface AskPreset { plan: Record<string, unknown>; filters?: Record<string, unknown> }

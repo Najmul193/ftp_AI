@@ -97,6 +97,16 @@ def _resolver(vault: Vault, policy: FieldPolicy, names: dict[str, str], div_code
 
 # --- the planner's context and the plan's filters ------------------------------ #
 
+def page_facts(db: Session, a: "Asker", page: "PageContext | None", resolve) -> tuple[str, list[Segment]]:
+    """What the asker's page shows: notes for the context, and bank figures as
+    their own segment (so the gateway tiers them as bank data)."""
+    if page is None or not page.page:
+        return "", []
+    from app.ai.copilot import page_facts as pf
+    f = pf.build(db, page.page, scope=a.scope, reader=a.reader, label="", resolve=resolve,
+                 scenario=page.scenario)
+    return "\n".join(f.notes), ([Segment("bank", "\n".join(f.facts))] if f.facts else [])
+
 def _scope_words(db: Session, a: Asker, vault: Vault) -> str:
     if a.level is ScopeLevel.HO:
         return "the whole bank"
@@ -126,7 +136,8 @@ def _context(db: Session, a: Asker, vault: Vault, policy: FieldPolicy,
         lines.append(f"THE PAGE IS FILTERED TO: {filt or 'nothing (the whole of what the asker sees)'}.")
         if page.page == "coach" and page.where.branch_codes and resolve:
             lines.append(f"THIS BRANCH (open on the page): {resolve('BR', page.where.branch_codes[0])}.")
-        lines.append("Words like 'this', 'here', 'these', 'this branch' mean what this page shows. "
+        lines.append("Words like 'this', 'here', 'these', 'this branch', 'that forecast', 'this "
+                     "scenario' mean what this page shows (see ON THE PAGE below, if given). "
                      "The page's filters apply unless the question names something else, so do "
                      "not repeat them in the plan.")
     if policy.action("product_name") == "pass":
@@ -234,7 +245,7 @@ def _narrator_system(lang: str, explain: bool) -> str:
         "The platform ran a query; its table and chart are shown beside your answer. Explain "
         "the result.\nRules:\n"
         "- Use only numbers that appear in RESULT, written the same way (you may round a rate). "
-        "Amounts are BDT, marked cr (crore) or lakh: keep the unit as given. Never compute new figures.\n"
+        "Amounts are BDT, marked cr (crore), lakh or taka: keep the unit as given. Never compute new figures.\n"
         "- Tokens like BR_K7Q, DIV_2MX, DIST_4TA, PRD_9QX stand for names you are not shown. "
         "Copy them exactly; never guess what they are.\n"
         "- Lead with the direct answer in one sentence, then at most three short sentences or "
@@ -315,6 +326,8 @@ class PageContext:
     where: tools.Where
     date_from: date | None = None
     date_to: date | None = None
+    #: The scenario lab's settings on screen.
+    scenario: dict | None = None
 
     @property
     def label(self) -> str:
@@ -346,7 +359,8 @@ def page_context(db: Session, ctx: dict | None) -> PageContext | None:
         w = dataclass_replace(w, branch_codes=(str(code),), division_id=None, district_code=None,
                               category=None)
     df, dt = _iso(f.get("date_from")), _iso(f.get("date_to"))
-    return PageContext(page, w, df, dt) if (df and dt) else PageContext(page, w)
+    sc = ctx.get("scenario") if page == "scenario" and isinstance(ctx.get("scenario"), dict) else None
+    return PageContext(page, w, df, dt, sc) if (df and dt) else PageContext(page, w, scenario=sc)
 
 
 def _peer_notes(db: Session, code: str, plan: Plan) -> list[str]:
@@ -500,9 +514,13 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         else:
             yield {"type": "status", "text": "Working out what to look up"}
         page = page_context(db, context)
+        notes, facts_segs = page_facts(db, a, page, resolver) if preset is None else ("", [])
         planner_ctx = _context(db, a, vault, state.policy, history, page, resolver) \
             if preset is None else ""
-        turns = [Turn("user", [Segment("instruction", planner_ctx), Segment("user", masked_q)])]
+        if notes:
+            planner_ctx += "\n" + notes
+        turns = [Turn("user", [Segment("instruction", planner_ctx), *facts_segs,
+                               Segment("user", masked_q)])]
         for attempt in range(0 if preset is not None else 2):
             try:
                 r = gw.call(db, a.caller, GatewayRequest(
@@ -595,7 +613,7 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         # 3. Narrate.
         yield {"type": "status", "text": "Writing the answer"}
         explain = plan.tool == "explain"
-        segs = [Segment("user", masked_q)]
+        segs = [*facts_segs, Segment("user", masked_q)]
         if data_text:
             kind = "public" if plan.tool == "market" else "bank"
             segs.append(Segment(kind, f"RESULT:\n{data_text}"))
@@ -612,7 +630,8 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
                                                "script). Keep tokens, product names and numbers "
                                                "exactly as given."))
         facts = None if explain else (differences_by_line(data_text)
-                                      + [v for _, v, _ in numbers_in(masked_q)])
+                                      + [v for _, v, _ in numbers_in(masked_q)]
+                                      + [v for x in facts_segs for v in differences_by_line(x.text)])
         try:
             r = gw.call(db, a.caller, GatewayRequest(
                 purpose="ask_answer", system=_narrator_system(lang, explain),
