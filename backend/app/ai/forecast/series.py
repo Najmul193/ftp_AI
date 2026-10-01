@@ -208,14 +208,17 @@ def _err(err: float, unit: str) -> str:
 
 def forecast(values, steps: int, *, unit: str = "amount", points_per_year: int = 250,
              lo: float | None = None, hi: float | None = None,
-             max_history: int = 750, log: bool | None = None) -> Forecast:
+             max_history: int = 750, log: bool | None = None,
+             calibration: float = 1.0) -> Forecast:
     """Forecast `steps` points on from `values` (oldest first).
 
     `unit`: "amount" (errors in %) or "rate" (errors in percentage points).
     Amounts that are always positive (prices, balances) are modelled in logs:
     their moves are proportional, and a band can never go below zero.
     Only the most recent `max_history` points are used: older history says
-    little about next month, and the cost stays flat as history grows."""
+    little about next month, and the cost stays flat as history grows.
+    `calibration` widens or narrows the bands from the kept forecasts' record
+    (`insights.learning.calibration`)."""
     y = np.asarray(values, dtype=float)[-max_history:]
     if len(y) == 0:
         raise ValueError("no history to forecast from")
@@ -227,7 +230,7 @@ def forecast(values, steps: int, *, unit: str = "amount", points_per_year: int =
     # Bands as wide as the backtest showed they need to be: a model's own
     # one-step errors understate how far a month-ahead forecast can miss.
     sims = simulate(f, steps, lo=np.log(lo) if (log and lo) else lo,
-                    hi=np.log(hi) if (log and hi) else hi, scale=bt.band_scale)
+                    hi=np.log(hi) if (log and hi) else hi, scale=bt.band_scale * calibration)
     if log:
         sims = np.exp(sims)
         # In logs the absolute error is a proportional one.
@@ -237,6 +240,9 @@ def forecast(values, steps: int, *, unit: str = "amount", points_per_year: int =
     p10, p50, p90 = np.percentile(sims, [10, 50, 90], axis=0)
     conf, why = confidence(len(y), bt, unit=unit, points_per_year=points_per_year)
     notes = []
+    if abs(calibration - 1) > 0.02:
+        notes.append(f"Bands {'widened' if calibration > 1 else 'narrowed'} {calibration:.2f}x "
+                     f"from the record of past forecasts.")
     if bt.band_scale > 1.05:
         notes.append(f"Bands widened {bt.band_scale:.1f}x so that they would have held 80% of "
                      f"past outcomes.")

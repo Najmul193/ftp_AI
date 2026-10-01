@@ -15,7 +15,7 @@ figures behind the others are outside their scope.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time as dtime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, desc, func, or_, select
@@ -29,7 +29,7 @@ from app.ai.gateway.gateway import Caller, GatewayRequest, Segment, Turn
 from app.ai.gateway.grounding import differences_by_line
 from app.ai.gateway.policy import Tier
 from app.ai.insights import brief as brief_mod
-from app.ai.insights import detectors
+from app.ai.insights import detectors, learning
 from app.ai.insights.facts import FactSheet
 from app.ai.insights.render import render
 from app.ai.models import AiProvider, Brief, Insight, InsightMark, JobRun
@@ -113,16 +113,32 @@ def _store(db: Session, scope_key: str, business_date: date | None,
     return {"found": len(seen), "new": new, "escalated": raised, "resolved": resolved}
 
 
+def votes(db: Session, days: int = 90) -> dict[str, learning.Votes]:
+    """Readers' marks on each kind of finding over the last `days`."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = db.execute(
+        select(Insight.kind,
+               func.count().filter(InsightMark.useful.is_(True)),
+               func.count().filter(InsightMark.useful.is_(False)),
+               func.count().filter(InsightMark.dismissed_at.is_not(None)))
+        .join(InsightMark, InsightMark.insight_id == Insight.id)
+        .where(InsightMark.updated_at >= since)
+        .group_by(Insight.kind)).all()
+    return {k: learning.Votes(int(u or 0), int(n or 0), int(d or 0)) for k, u, n, d in rows}
+
+
 def refresh(db: Session, *, force: bool = False) -> dict:
     fp = sheet.fingerprint(db)
     if not force and fp == _last_fingerprint(db):
         return {"skipped": "nothing has changed since the last run"}
     now = datetime.now(timezone.utc)
     out: dict = {"fingerprint": fp, "scopes": {}}
+    marks = votes(db)
+    out["demoted"] = sorted(k for k, v in marks.items() if learning.demoted(v))
     for scope in sheet.all_scopes(db):
         fs = sheet.build(db, scope, fp=fp)
-        out["scopes"][scope.key] = _store(db, scope.key, fs.business_date,
-                                          findings_for(fs, scope), now)
+        found = learning.adjust(findings_for(fs, scope), marks)
+        out["scopes"][scope.key] = _store(db, scope.key, fs.business_date, found, now)
     db.flush()
     return out
 

@@ -74,6 +74,19 @@ def _r(x: float, nd: int) -> Decimal:
     return Decimal(str(round(float(x), nd)))
 
 
+def calibration(db: Session, prefix: str) -> float:
+    """From the kept forecasts of this kind ("book:", "market:"): how often
+    the outcome fell inside the band, as a band multiplier."""
+    from app.ai.insights.learning import calibration as calib
+    from app.ai.models import ForecastRecord
+    rows = db.execute(select(ForecastRecord.p10, ForecastRecord.p90, ForecastRecord.actual)
+                      .where(ForecastRecord.target.like(f"{prefix}%"),
+                             ForecastRecord.actual.is_not(None))
+                      .order_by(desc(ForecastRecord.target_date)).limit(200)).all()
+    hits = sum(1 for lo, hi, a in rows if lo <= a <= hi)
+    return calib(hits, len(rows))
+
+
 # --- market ------------------------------------------------------------------------ #
 
 def _history(db: Session, code: str, days: int) -> list[tuple[date, Decimal]]:
@@ -112,7 +125,7 @@ def market_series(db: Session, code: str, horizon_days: int = HORIZON_DAYS) -> d
         lo, hi = _corridor(db)
     unit = "rate" if s.unit == "pct" else "amount"
     fc = series.forecast([float(v) for _, v in hist], steps, unit=unit, points_per_year=per_year,
-                         lo=lo, hi=hi)
+                         lo=lo, hi=hi, calibration=calibration(db, "market:"))
     nd = 4 if s.unit in ("pct", "bdt") else 2
     last = dates[-1]
     fdates = [last + timedelta(days=spacing * (k + 1)) for k in range(steps)]
@@ -262,6 +275,7 @@ def _book(db: Session, bs: BookScope, metrics: tuple[str, ...]) -> dict:
     quarter_end = series.quarter_end(latest)
     until = max(quarter_end, latest + timedelta(days=HORIZON_DAYS))
     fdays = series.business_days_after(latest, until)
+    calib = calibration(db, "book:")
     out_metrics = []
     for m in metrics:
         label, unit, kind = BOOK_METRICS[m]
@@ -270,7 +284,7 @@ def _book(db: Session, bs: BookScope, metrics: tuple[str, ...]) -> dict:
             continue
         y = [float(v) for _, v in pts]
         fc = series.forecast(y, len(fdays), unit="amount" if unit == "bdt" else "rate",
-                             points_per_year=250, max_history=300)
+                             points_per_year=250, max_history=300, calibration=calib)
         nd = 2 if unit == "bdt" else 4
         cal, p50 = series.calendar_fill(fdays, fc.p50, latest, until)
         _, p10 = series.calendar_fill(fdays, fc.p10, latest, until)
