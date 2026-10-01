@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.ai.market import catalog, sources
 from app.ai.market import service as market
 from app.ai.models import Macro, MarketObservation, MarketSeries, PeerFinancial, PeerRate
-from app.ai.public import match, parse
+from app.ai.public import banks, match, parse
 from app.models import AggDailyBranchProduct, Product, SystemSetting
 from app.services import audit
 
@@ -56,6 +56,94 @@ def _set_meta(db: Session, **kw) -> dict:
         row.value = v
     db.flush()
     return v
+
+
+def directory(db: Session) -> dict[str, banks.Bank]:
+    """The bank directory with today's full names from Bangladesh Bank's list."""
+    return banks.with_names(meta(db).get("bank_names"))
+
+
+def product_map(db: Session) -> dict[str, str]:
+    """Head office's choices: product code -> "book:category" or "none"."""
+    return dict(meta(db).get("product_map") or {})
+
+
+def category_of(p: Product, overrides: dict[str, str]) -> tuple[tuple[str, str] | None, str]:
+    """((book, category) or None, "set" | "auto") for one of our products."""
+    v = overrides.get(p.product_code)
+    if v == "none":
+        return None, "set"
+    if v and ":" in v:
+        book, cat = v.split(":", 1)
+        if cat in parse.PRODUCT_LABELS:
+            return (book, cat), "set"
+    return match.peer_key(p.short_name, p.side.value,
+                          p.liability_nature.value if p.liability_nature else None), "auto"
+
+
+def set_product_map(db: Session, code: str, value: str | None, *, actor_id: int,
+                    actor_username: str) -> dict:
+    """Set (or with None, clear back to automatic) one product's market category."""
+    if value is not None and value != "none":
+        book, _, cat = value.partition(":")
+        valid = parse.DEPOSIT_PRODUCTS if book == "deposit" else parse.LENDING_PRODUCTS \
+            if book == "lending" else ()
+        if cat not in valid:
+            raise ValueError(f"unknown market category {value!r}")
+    before = product_map(db)
+    after = dict(before)
+    if value is None:
+        after.pop(code, None)
+    else:
+        after[code] = value
+    _set_meta(db, product_map=after)
+    audit.record(db, action="AI_PRODUCT_MARKET_MAP", entity_type="product", entity_id=code,
+                 before={"market_category": before.get(code, "auto")},
+                 after={"market_category": after.get(code, "auto")},
+                 actor_user_id=actor_id, actor_username=actor_username)
+    return after
+
+
+def competitors(db: Session) -> list[str]:
+    return list(meta(db).get("competitors") or [])
+
+
+def set_competitors(db: Session, codes: list[str], *, actor_id: int, actor_username: str) -> list[str]:
+    known = set(banks.BY_CODE)
+    bad = [c for c in codes if c not in known]
+    if bad:
+        raise ValueError(f"unknown bank {bad[0]!r}")
+    before = competitors(db)
+    after = sorted(dict.fromkeys(codes))
+    _set_meta(db, competitors=after)
+    audit.record(db, action="AI_COMPETITORS_SET", entity_type="ai_settings", entity_id=SETTINGS_KEY,
+                 before={"competitors": before}, after={"competitors": after},
+                 actor_user_id=actor_id, actor_username=actor_username)
+    return after
+
+
+#: Peer sets a comparison can use.
+PEER_SETS = ("competitors", "pcb", "fb", "scb", "islamic", "all")
+
+
+def peer_banks(db: Session, peers: str = "competitors") -> tuple[set[str] | None, str]:
+    """(bank codes, label) for a peer set; None means every bank. "competitors"
+    falls back to private banks while head office has named none."""
+    d = banks.BY_CODE
+    if peers == "competitors":
+        comp = competitors(db)
+        if comp:
+            return set(comp), "your competitors"
+        peers = "pcb"
+    if peers == "pcb":
+        return {c for c, b in d.items() if b.group == "PCB"}, "private banks"
+    if peers == "fb":
+        return {c for c, b in d.items() if b.group == "FB"}, "foreign banks"
+    if peers == "scb":
+        return {c for c, b in d.items() if b.group in ("SCB", "DFI")}, "state-owned and specialised banks"
+    if peers == "islamic":
+        return {c for c, b in d.items() if b.islamic}, "Islamic banks"
+    return None, "all banks"
 
 
 def set_self_bank(db: Session, bank: str, *, actor_id: int, actor_username: str) -> dict:
@@ -134,6 +222,12 @@ def collect_bb_public(db: Session, *, manual: bool = False) -> dict:
                 if pr.repo is None:
                     out["errors"].append("home: policy rate box not found -- has the page changed?")
             elif name in ("deposit", "lending"):
+                if name == "deposit":
+                    # The page carries Bangladesh Bank's own bank list: names
+                    # follow a bank that renames, with no extra request.
+                    names = banks.parse_bank_list(body)
+                    if names:
+                        _set_meta(db, bank_names=names)
                 t = parse.deposit_table(body) if name == "deposit" else parse.lending_table(body)
                 n = _store_peer_rates(db, t.rows, url)
                 out["pages"][name] = {"month": t.month, "rates": n,
@@ -209,8 +303,10 @@ def latest_month(db: Session, book: str) -> date | None:
     return db.scalar(select(func.max(PeerRate.month)).where(PeerRate.book == book))
 
 
-def peer_table(db: Session, book: str, month: date | None = None) -> dict:
-    """Every bank's mid rate per product for a month, with standings."""
+def peer_table(db: Session, book: str, month: date | None = None,
+               peers: set[str] | None = None) -> dict:
+    """Every bank's mid rate per product for a month, with standings, and the
+    median of `peers` (a chosen set of banks) where one is given."""
     month = month or latest_month(db, book)
     if month is None:
         return {"month": None, "book": book, "products": [], "banks": []}
@@ -232,8 +328,10 @@ def peer_table(db: Session, book: str, month: date | None = None) -> dict:
         st = match.standing(vals, self_bank, higher_first=book == "deposit")
         # Private commercial banks are this bank's real competitors.
         pcb = {b: v for b, v in vals.items() if groups.get(b) == "PCB"}
+        chosen = [v for b, v in vals.items() if peers is not None and b in peers]
         products.append({"product": p, "label": parse.PRODUCT_LABELS[p], **st,
                          "pcb_median": match.quantile(list(pcb.values()), 0.5),
+                         "peer_median": match.quantile(chosen, 0.5) if chosen else None,
                          "self_range": ranges.get((self_bank, p))})
     banks = sorted(groups)
     grid = {b: {p: by_product.get(p, {}).get(b) for p in order} for b in banks}
@@ -242,46 +340,55 @@ def peer_table(db: Session, book: str, month: date | None = None) -> dict:
 
 
 def book_vs_peers(db: Session, *, as_of: date | None = None,
-                  branch_ids: list[int] | None = None) -> list[dict]:
+                  branch_ids: list[int] | None = None, include_new: bool = False) -> list[dict]:
     """Each of this bank's products: what its customers actually get (the
     balance-weighted rate from the book) against what the market posts for
     the like product, and the balance that pricing gap sits on.
 
     `branch_ids` limits the book to a part of the bank (a division's, a
-    branch's own); None is the whole bank."""
+    branch's own); None is the whole bank. `include_new` keeps products with
+    no balances yet (just launched): their market range is the launch guide.
+    Products are read afresh on every call, so one added or retired in the
+    product master shows up, or drops out, at once."""
     m = AggDailyBranchProduct
     q = select(func.max(m.business_date))
     if branch_ids is not None:
         q = q.where(m.branch_id.in_(branch_ids or [-1]))
     as_of = as_of or db.scalar(q)
-    if as_of is None:
+    ours: dict[str, tuple[Decimal, Decimal | None]] = {}
+    if as_of is not None:
+        stmt = (select(m.product_code, func.sum(m.total_balance), func.sum(m.roi_x_balance))
+                .where(m.business_date == as_of).group_by(m.product_code))
+        if branch_ids is not None:
+            stmt = stmt.where(m.branch_id.in_(branch_ids or [-1]))
+        ours = {code: (Decimal(bal or 0), (Decimal(rx) / Decimal(bal)).quantize(Decimal("0.01"))
+                       if bal else None) for code, bal, rx in db.execute(stmt).all()}
+    elif not include_new:
         return []
-    stmt = (select(m.product_code, func.sum(m.total_balance), func.sum(m.roi_x_balance))
-            .where(m.business_date == as_of).group_by(m.product_code))
-    if branch_ids is not None:
-        stmt = stmt.where(m.branch_id.in_(branch_ids or [-1]))
-    book_rows = db.execute(stmt).all()
-    ours = {code: (Decimal(bal or 0), (Decimal(rx) / Decimal(bal)).quantize(Decimal("0.01"))
-                   if bal else None) for code, bal, rx in book_rows}
-    tables = {b: peer_table(db, b) for b in ("deposit", "lending")}
+    comp, comp_label = peer_banks(db, "competitors")
+    tables = {b: peer_table(db, b, peers=comp) for b in ("deposit", "lending")}
+    overrides = product_map(db)
     out = []
     for p in db.scalars(select(Product).where(Product.is_active.is_(True))
                         .order_by(Product.side, Product.product_code)):
-        key = match.peer_key(p.short_name, p.side.value,
-                             p.liability_nature.value if p.liability_nature else None)
+        key, source = category_of(p, overrides)
         bal, rate = ours.get(p.product_code, (Decimal(0), None))
-        if key is None or rate is None:
+        if key is None or (rate is None and not include_new):
             continue
         book, prod = key
         st = next((x for x in tables[book]["products"] if x["product"] == prod), None)
         if st is None or st["median"] is None:
             continue
-        gap = (rate - st["median"]).quantize(Decimal("0.01"))
+        ref = st["peer_median"] if st.get("peer_median") is not None else st["median"]
         out.append({"product_code": p.product_code, "name": p.short_name, "side": p.side.value,
-                    "peer_book": book, "peer_product": prod,
+                    "peer_book": book, "peer_product": prod, "mapping": source,
                     "peer_label": parse.PRODUCT_LABELS[prod], "our_rate": rate,
                     "market_median": st["median"], "pcb_median": st["pcb_median"],
-                    "p25": st["p25"], "p75": st["p75"], "gap": gap, "balance": bal,
+                    "peer_median": st.get("peer_median"), "peer_label_set": comp_label,
+                    "p25": st["p25"], "p75": st["p75"],
+                    "gap": (rate - st["median"]).quantize(Decimal("0.01")) if rate is not None else None,
+                    "gap_to_peers": (rate - ref).quantize(Decimal("0.01")) if rate is not None else None,
+                    "balance": bal, "new": rate is None,
                     "self_posted": st["self"], "month": tables[book]["month"], "as_of": as_of})
     return out
 

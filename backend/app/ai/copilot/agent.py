@@ -51,6 +51,12 @@ PUBLIC_TOOLS = ("market", "market_forecast", "policy_outlook")
 PAGE_TOOLS = ("compare", "trend", "why", "forecast", "scenario")
 
 
+def _public(plan: Plan) -> bool:
+    """Public data only: market series, the outlook, or other banks' rates
+    without our own book beside them."""
+    return plan.tool in PUBLIC_TOOLS or (plan.tool == "market_rates" and not plan.include_ours)
+
+
 def use_agent(db: Session) -> bool:
     s = svc.state(db)
     p = db.get(AiProvider, s.active_provider_id) if s.active_provider_id else None
@@ -70,6 +76,7 @@ How to work:
 - Start with the lookup that answers the question most directly; then add only what explains or tests it.
 - Good chains: a fall in profit -> "why" by product -> the market move behind it ("market") -> where it heads ("forecast").
   "Should we raise term-deposit rates?" -> "peer_compare" -> "scenario" with those products' rates raised.
+  "How does City Bank price against us?" -> "market_rates" with that bank -> "peer_compare" if pricing advice is asked.
   "Will BB cut, and what would it do to us?" -> "policy_outlook" -> "scenario" with market_bp -50.
 - Use what a RESULT shows (a product token, a branch token, a size of move) in the next plan.
 - Never repeat a plan. Stop as soon as the question can be answered: one step is often enough.
@@ -113,12 +120,15 @@ FOLLOWUPS: dict[str, list[tuple[str, str]]] = {
     "scenario": [("Which branches' profit moves most?", "compare"),
                  ("Are our deposit rates competitive?", "peer_compare"),
                  ("Where is profit heading by month-end?", "forecast")],
-    "peer_compare": [("What if we match the private banks on term deposits?", "scenario"),
+    "peer_compare": [("Which banks pay the most on a 1-year FD?", "market_rates"),
+                     ("What if we match the private banks on term deposits?", "scenario"),
                      ("Where are deposits heading by month-end?", "forecast")],
     "benchmarks": [("What if Bangladesh Bank cuts 50 bp?", "scenario"),
                    ("Which way is the policy rate leaning?", "policy_outlook")],
     "market": [("Where are market rates heading in 90 days?", "market_forecast"),
                ("Which way is the policy rate leaning?", "policy_outlook")],
+    "market_rates": [("What if we matched the private banks on term deposits?", "scenario"),
+                     ("Are our deposit rates competitive overall?", "peer_compare")],
 }
 
 
@@ -305,7 +315,7 @@ def ask(a: chat.Asker, question: str, conversation_id: str | None, lang: str,
             wheres.append(where.to_dict())
             steps.append((plan, rj, data))
             yield {"type": "result", "result": rj, "tool": plan.tool, "step": n + 1}
-            kind = "public" if plan.tool in PUBLIC_TOOLS else "bank"
+            kind = "public" if _public(plan) else "bank"
             convo = convo + [Turn("user", [Segment(kind, f"RESULT {n + 1}:\n{data}"),
                                            Segment("instruction", "Next plan, or done?")])]
 
@@ -326,9 +336,11 @@ def ask(a: chat.Asker, question: str, conversation_id: str | None, lang: str,
 
         # Narrate everything together.
         yield {"type": "status", "text": "Writing the answer"}
-        segs = [*facts_segs, Segment("user", masked_q)]
+        # The narrator reads the page too: "this bank" is the one open on it.
+        segs = [*facts_segs, *([Segment("instruction", notes)] if notes else []),
+                Segment("user", masked_q)]
         for i, (p, _, t) in enumerate(ran, start=1):
-            kind = "public" if p.tool in PUBLIC_TOOLS else "bank"
+            kind = "public" if _public(p) else "bank"
             segs.append(Segment(kind, f"RESULT {i} ({p.tool}):\n{t}"))
         for m in history[-2:]:
             if m.answer:

@@ -175,6 +175,9 @@ class FactSheet:
     landings: dict[str, Landing] = field(default_factory=dict)
     #: Which way the policy rate leans at the next meeting (public data).
     policy: PolicyView | None = None
+    #: Other banks' posted rates that moved since last month (public data):
+    #: dicts from `public.explorer.movers`, competitors first.
+    rate_moves: list[dict] = field(default_factory=list)
     #: "BR:0101" -> "Dhaka Main (0101)": how placeholders read to a person.
     names: dict[str, str] = field(default_factory=dict)
     #: Moves when any input moves: data version, market, news.

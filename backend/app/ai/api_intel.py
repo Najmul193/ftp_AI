@@ -310,3 +310,115 @@ def alco_commentary(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
     except (gw.AiUnavailable, gw.GatewayBlocked, gw.GatewayError) as exc:
         raise HTTPException(502, {"code": getattr(exc, "code", "provider"),
                                   "message": getattr(exc, "message", str(exc))}) from exc
+
+
+# --- market rate explorer ---------------------------------------------------------------- #
+
+def _branch_ids(scope) -> list[int] | None:
+    return None if scope.unrestricted else list(scope.branch_ids or [])
+
+
+PeerSet = Literal["competitors", "pcb", "fb", "scb", "islamic", "all"]
+
+
+@router.get("/market/search", dependencies=_view)
+def market_search(db: DbDep, q: str = Query(..., min_length=1, max_length=80)) -> dict:
+    from app.ai.public import explorer
+    return {"items": explorer.search(db, q)}
+
+
+@router.get("/market/grid", dependencies=_view)
+def market_grid(db: DbDep, scope: ScopeDep, book: Literal["deposit", "lending"] = "deposit",
+                peers: PeerSet = "competitors") -> dict:
+    """Every bank's posted rates by category; our bank's row and our book's
+    actual rates (in the asker's scope) pinned."""
+    from app.ai.public import explorer
+    return explorer.grid(db, book, peers, _branch_ids(scope))
+
+
+@router.get("/market/category", dependencies=_view)
+def market_category(db: DbDep, scope: ScopeDep, product: str = Query(..., max_length=20),
+                    book: Literal["deposit", "lending"] = "deposit",
+                    peers: PeerSet = "competitors") -> dict:
+    from app.ai.public import explorer
+    return explorer.category(db, book, product, peers, _branch_ids(scope))
+
+
+@router.get("/market/bank/{code}", dependencies=_view)
+def market_bank(code: str, db: DbDep, scope: ScopeDep) -> dict:
+    from app.ai.public import explorer
+    out = explorer.bank(db, code, _branch_ids(scope))
+    if not out.get("available"):
+        raise HTTPException(404, f"no bank {code}")
+    return out
+
+
+@router.get("/market/movers", dependencies=_view)
+def market_movers(db: DbDep, peers: PeerSet = "all") -> dict:
+    from app.ai.public import explorer
+    return explorer.movers(db, peers)
+
+
+@router.get("/market/products", dependencies=_view)
+def market_products(db: DbDep, user: ActiveUser, scope: ScopeDep) -> dict:
+    """Our products -- every active one, new ones included -- with the market
+    category each is compared with, against the market and our competitors.
+    Follows the product master: an added or retired product shows at once."""
+    from app.ai.public import banks as bank_dir
+    from app.ai.public import parse as pp
+    comp = public.competitors(db)
+    d = public.directory(db)
+    return {"items": public.book_vs_peers(db, branch_ids=_branch_ids(scope), include_new=True),
+            "unmapped": _unmapped(db), "label": _scope_label(db, user),
+            "categories": [{"value": f"{'deposit' if p in pp.DEPOSIT_PRODUCTS else 'lending'}:{p}",
+                            "label": lab} for p, lab in pp.PRODUCT_LABELS.items()],
+            "competitors": [{"code": c, "name": bank_dir.bank_of(c, d).name} for c in comp],
+            "banks": [{"code": b.code, "name": b.name, "group": b.group} for b in
+                      sorted(d.values(), key=lambda b: b.name)],
+            "self_bank": public.meta(db)["self_bank"]}
+
+
+def _unmapped(db) -> list[dict]:
+    """Active products with no market line to compare with (current accounts,
+    or set to "none")."""
+    from app.models import Product as P
+    overrides = public.product_map(db)
+    out = []
+    for p in db.scalars(select(P).where(P.is_active.is_(True)).order_by(P.side, P.product_code)):
+        key, source = public.category_of(p, overrides)
+        if key is None:
+            out.append({"product_code": p.product_code, "name": p.short_name, "side": p.side.value,
+                        "mapping": source})
+    return out
+
+
+class ProductMapIn(BaseModel):
+    product_code: str = Field(min_length=1, max_length=40)
+    #: "deposit:fd_1y" / "lending:housing", "none" to leave it uncompared, null for automatic.
+    category: str | None = Field(None, max_length=40)
+
+
+@router.put("/market/product-map", dependencies=[Depends(require_ai_enabled)])
+def market_product_map(body: ProductMapIn, db: DbDep, user: MarketEditor) -> dict:
+    from app.models import Product as P
+    if db.scalar(select(P.id).where(P.product_code == body.product_code)) is None:
+        raise HTTPException(404, f"no product {body.product_code}")
+    try:
+        m = public.set_product_map(db, body.product_code, body.category, actor_id=user.id,
+                                   actor_username=user.username)
+    except ValueError as exc:
+        raise HTTPException(422, {"code": "bad_category", "message": str(exc)}) from exc
+    return {"product_map": m}
+
+
+class CompetitorsIn(BaseModel):
+    banks: list[str] = Field(default_factory=list, max_length=30)
+
+
+@router.put("/market/competitors", dependencies=[Depends(require_ai_enabled)])
+def market_competitors(body: CompetitorsIn, db: DbDep, user: HoAdmin) -> dict:
+    try:
+        return {"competitors": public.set_competitors(db, body.banks, actor_id=user.id,
+                                                      actor_username=user.username)}
+    except ValueError as exc:
+        raise HTTPException(422, {"code": "bad_bank", "message": str(exc)}) from exc

@@ -253,6 +253,12 @@ def _outlook(db: Session, scope: Scope, fs: FactSheet) -> None:
                 m["metric"], m["label"], m["unit"], m["kind"], book["month_end"],
                 _d(m["last"]["value"]), _d(mo["p10"]), _d(mo["p50"]), _d(mo["p90"]),
                 _d(mo.get("so_far")), _d(mo.get("previous_month")), m["confidence"])
+    try:
+        from app.ai.public import explorer
+        comp = explorer.movers(db, "competitors", limit=12)
+        fs.rate_moves = comp["items"] or explorer.movers(db, "pcb", limit=6)["items"]
+    except Exception:  # noqa: BLE001
+        fs.rate_moves = []
     if scope.head_office:
         fs.peer_gaps = [PeerGap(r["product_code"], r["side"], r["peer_label"], r["our_rate"],
                                 r["market_median"], r["pcb_median"], r["p25"], r["p75"],

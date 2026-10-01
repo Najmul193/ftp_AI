@@ -87,6 +87,7 @@ function useContextLine() {
   const bits: string[] = [];
   if (page === "coach" && extra.branchLabel) bits.push(extra.branchLabel);
   if (page === "scenario" && extra.scenarioLabel) bits.push(extra.scenarioLabel);
+  if (page === "market" && extra.marketLabel) bits.push(extra.marketLabel);
   const f = filters as Record<string, unknown>;
   if (f.date_from && f.date_to) bits.push(`${shortDate(String(f.date_from))}–${shortDate(String(f.date_to))}`);
   if (f.division_id) bits.push(`${divisions.find((d) => d.id === f.division_id)?.name ?? "one"} division`);
@@ -159,7 +160,8 @@ function AskDrawer({ seed, onClose }: { seed?: Seed; onClose: () => void }) {
       // Read the page at the moment of asking: a slider moved since opening counts.
       const now = pageExtra();
       const context = useCtx ? { page: ctx.page, filters: ctx.filters, branch: ctx.branch,
-                                 scenario: ctx.page === "scenario" ? now.scenario : undefined } : undefined;
+                                 scenario: ctx.page === "scenario" ? now.scenario : undefined,
+                                 market: ctx.page === "market" ? now.market : undefined } : undefined;
       await askApi.ask({ question: q, conversation_id: conv, lang, preset, context }, (e) => {
         switch (e.type) {
           case "start": setConv(e.conversation_id); patch((t) => ({ ...t, sent: e.sent })); break;

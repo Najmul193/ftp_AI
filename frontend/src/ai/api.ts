@@ -329,6 +329,7 @@ const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "/api/v1";
 export interface AskContext {
   page: string; filters: Record<string, unknown>; branch?: string;
   scenario?: Record<string, unknown>;
+  market?: { book: string; peers: string; product?: string; bank?: string };
 }
 
 /** A plan built by a page (a "Why?" button), with the page's filters. */
@@ -580,4 +581,70 @@ export const alcoApi = {
   commentary: () => request<{ text: string; grounded: boolean | null; unverified: string[];
                               provider: string; model: string; truncated: boolean; sent: string }>(
     "/ai/alco/commentary", { method: "POST" }),
+};
+
+// --- Market rate explorer ---------------------------------------------------------
+
+export type PeerSet = "competitors" | "pcb" | "fb" | "scb" | "islamic" | "all";
+export type RateBook = "deposit" | "lending";
+
+export interface MarketHit {
+  type: "bank" | "category" | "product"; label: string; detail: string;
+  code?: string; book?: RateBook | null; product?: string | null;
+}
+
+export interface MarketGrid {
+  book: RateBook; month: string | null; months?: string[]; peers: PeerSet; peer_label: string;
+  self_bank: string;
+  categories: { product: string; label: string; median: number | null; p25: number | null; p75: number | null;
+                rank: number | null; banks: number; self: number | null; peer_median: number | null;
+                book: { rate: number | null; balance: number; products: string[] } | null }[];
+  banks: { code: string; name: string; group: string; islamic: boolean; self: boolean; in_set: boolean;
+           rates: Record<string, number | null> }[];
+}
+
+export interface MarketCategory {
+  available: boolean; book: RateBook; product: string; label: string; month: string; peers: PeerSet;
+  peer_label: string; self_bank: string;
+  standing: { median: number | null; p25: number | null; p75: number | null; min: number | null;
+              max: number | null; self: number | null; rank: number | null; banks: number;
+              percentile: number | null; peer_median: number | null };
+  banks: { code: string; name: string; group: string; low: number; high: number; mid: number;
+           self: boolean; in_set: boolean }[];
+  trend: { month: string; median: number | null; peer_median: number | null; self: number | null }[];
+  book_rate: { rate: number | null; balance: number; products: string[] } | null;
+}
+
+export interface MarketBank {
+  available: boolean; code: string; name: string; group: string; group_label: string; islamic: boolean;
+  self_bank: string;
+  books: Partial<Record<RateBook, { month: string; rows: { product: string; label: string; low: number;
+    high: number; mid: number; change: number | null; median: number | null; our_posted: number | null;
+    our_book: number | null; gap_to_us: number | null }[] }>>;
+}
+
+export interface OurProduct extends PeerRow {
+  mapping: "auto" | "set"; peer_median: number | null; peer_label_set: string;
+  gap_to_peers: number | null; new: boolean;
+}
+
+export const marketRatesApi = {
+  search: (q: string) => request<{ items: MarketHit[] }>(`/ai/market/search?q=${encodeURIComponent(q)}`),
+  grid: (book: RateBook, peers: PeerSet) => request<MarketGrid>(`/ai/market/grid?book=${book}&peers=${peers}`),
+  category: (book: RateBook, product: string, peers: PeerSet) =>
+    request<MarketCategory>(`/ai/market/category?book=${book}&product=${product}&peers=${peers}`),
+  bank: (code: string) => request<MarketBank>(`/ai/market/bank/${encodeURIComponent(code)}`),
+  movers: (peers: PeerSet) => request<{ available: boolean; note: string | null; peer_label: string;
+    items: { book: RateBook; product: string; label: string; code: string; name: string; from: number;
+             to: number; change_bp: number; month: string }[] }>(`/ai/market/movers?peers=${peers}`),
+  products: () => request<{ items: OurProduct[]; label: string; self_bank: string;
+    unmapped: { product_code: string; name: string; side: string; mapping: string }[];
+    categories: { value: string; label: string }[];
+    competitors: { code: string; name: string }[];
+    banks: { code: string; name: string; group: string }[] }>("/ai/market/products"),
+  setProductMap: (product_code: string, category: string | null) =>
+    request<{ product_map: Record<string, string> }>("/ai/market/product-map",
+      { method: "PUT", ...json({ product_code, category }) }),
+  setCompetitors: (banks: string[]) =>
+    request<{ competitors: string[] }>("/ai/market/competitors", { method: "PUT", ...json({ banks }) }),
 };

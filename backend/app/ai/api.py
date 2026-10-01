@@ -592,6 +592,8 @@ class ContextIn(BaseModel):
     branch: str | None = Field(None, max_length=10)
     #: Page-specific: the scenario lab's settings on screen (checked server-side).
     scenario: dict | None = None
+    #: Page-specific: the market rate explorer's selection (book, peers, product, bank).
+    market: dict | None = None
 
 
 class AskIn(BaseModel):

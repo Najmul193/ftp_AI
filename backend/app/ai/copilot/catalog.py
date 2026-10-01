@@ -52,9 +52,11 @@ DIMENSIONS = ("total", "branch", "product", "division", "district", "category")
 PERIODS = ("latest_day", "last_7_days", "last_30_days", "this_month", "last_month", "all", "custom")
 CHARTS = ("bar", "line", "none")
 TOOLS = ("compare", "trend", "why", "market", "benchmarks", "insights", "explain", "clarify",
-         "forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare")
+         "forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare", "market_rates")
 #: Tools that look ahead or outside the bank; run by `copilot.tools_intel`.
-INTEL_TOOLS = ("forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare")
+INTEL_TOOLS = ("forecast", "market_forecast", "policy_outlook", "scenario", "peer_compare",
+               "market_rates")
+PEER_SETS = ("competitors", "pcb", "fb", "scb", "islamic", "all")
 FORECAST_METRICS = ("deposits", "advances", "net_ftp_profit", "cost_of_deposits",
                     "yield_on_advances", "nim")
 FORECAST_CODES = ("BB_CALL_ON", "BB_TBILL_91", "BB_TBILL_364", "BB_TBOND_5Y", "FX_USDBDT",
@@ -105,13 +107,20 @@ class Plan:
     period_set: bool = False
     #: For scenario: the what-if's settings, checked when it runs.
     scenario: dict | None = None
+    #: For market_rates: other banks and rate categories as the model wrote
+    #: them (resolved when it runs), the comparison set, and whether to add
+    #: our own book's rates.
+    peer_banks: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    peer_set: str | None = None
+    include_ours: bool = True
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()}
         d["date_from"] = self.date_from.isoformat() if self.date_from else None
         d["date_to"] = self.date_to.isoformat() if self.date_to else None
         d["where"] = [{"metric": c.metric, "op": c.op, "value": str(c.value)} for c in self.where]
-        for k in ("metrics", "branches", "products", "codes"):
+        for k in ("metrics", "branches", "products", "codes", "peer_banks", "categories"):
             d[k] = list(d[k])
         return d
 
@@ -281,6 +290,22 @@ def _intel_plan(tool: str, d: dict) -> Plan:
     side = side.upper() if side else None
     if side is not None and side not in SIDES:
         raise PlanError(f"unknown side {side!r}")
+    if tool == "market_rates":
+        peer_set = _str(d.get("group") or d.get("peer_set"), 20)
+        if peer_set is not None and peer_set not in PEER_SETS:
+            raise PlanError(f"unknown group {peer_set!r}")
+        try:
+            limit = max(1, min(int(d.get("limit") or 15), 61))
+        except (TypeError, ValueError):
+            limit = 15
+        return Plan(tool=tool, side=side, title=title, chart="bar",
+                    peer_banks=_list(d.get("banks"), 8), categories=_list(d.get("products")
+                                                                         or d.get("categories"), 6),
+                    peer_set=peer_set, limit=limit,
+                    # Unsaid, the order is the customer's: deposits highest
+                    # first, loans cheapest first (decided when it runs).
+                    order={"asc": "asc", "desc": "desc"}.get(_str(d.get("order"), 5) or "", "auto"),
+                    include_ours=d.get("include_ours") is not False)
     return Plan(tool=tool, side=side, title=title, chart="none" if tool == "policy_outlook" else "bar")
 
 
@@ -326,6 +351,8 @@ PAGES: dict[str, tuple[str, str]] = {
                             "the month's forecast, and the top risks and openings"),
     "scenario": ("Scenario lab", "a what-if on rates, pass-through and balances, and its effect on "
                                  "bank NII, branch FTP profit and treasury"),
+    "market": ("Market rates", "every bank's posted deposit and lending rates (Bangladesh Bank's "
+                               "bank-wise tables), our posted rates and our customers' actual rates"),
     "alco": ("ALCO pack", "the monthly asset-liability pack: policy outlook, market forecasts, the "
                           "book's landing, NII sensitivity, pricing and decisions"),
     "rates": ("Rate configuration", "the FTP benchmark, liquidity and other cost rates in force"),
@@ -354,6 +381,9 @@ _PAGE_SUGGESTIONS = {
     "scenario": ["Explain this result in plain words",
                  "And if we passed only 30% to term depositors?",
                  "Which branches are hit hardest under this?"],
+    "market": ["Which banks pay the most on a 1-year FD?",
+               "How does City Bank price against us?",
+               "Which private banks are cheapest for home loans?"],
     "alco": ["Summarise this pack for the committee in five lines",
              "Which decision here is worth most?",
              "What if rates fall 100 bp instead?"],
@@ -403,6 +433,7 @@ Reply with a single JSON object, no prose. Fields:
     "policy_outlook"   which way Bangladesh Bank's policy rate leans at the next MPC meeting, and why
     "scenario"   a what-if: put the settings in "scenario": {{"market_bp": move in bp, "deposit_pass": 0..1, "loan_pass": 0..1, "competitor_bp": other banks' deposit rates move, "deposit_growth_pct", "loan_growth_pct", "horizon_months", "product_rate_bp": {{"PRODUCT_CODE": bp}}}}; omit what the question does not set
     "peer_compare"  our product rates against other banks' posted rates (Bangladesh Bank's bank-wise tables); side optional
+    "market_rates"  look up other banks' posted rates (Bangladesh Bank's monthly tables, 61 banks): "banks": names as written ("City Bank", "EBL", "BRAC"), "products": rate types in words ("1 year FD", "savings", "home loan", "SME working capital"), "group": "competitors"|"pcb"|"fb"|"scb"|"islamic"|"all", "order": "desc" (highest first) or "asc", "limit", "include_ours": true to add our own rates
     "explain"    a concept question needing no data ("what is FTP?"); put nothing else
     "clarify"    the question is ambiguous or impossible; put your question to the user in "message"
   metrics: list of up to 4 of
@@ -451,5 +482,11 @@ Q: what happens to our NII if BB hikes 50 bp?
 {{"tool":"scenario","scenario":{{"market_bp":50}},"title":"A 50 bp hike"}}
 Q: are our term deposit rates competitive?
 {{"tool":"peer_compare","side":"LIABILITY","title":"Our deposit rates against other banks"}}
+Q: which banks pay the most on a 1-year FD?
+{{"tool":"market_rates","products":["1 year FD"],"group":"all","order":"desc","limit":10,"title":"Highest 1-year FD rates"}}
+Q: show City Bank's deposit rates against ours
+{{"tool":"market_rates","banks":["City Bank"],"side":"LIABILITY","title":"City Bank against us"}}
+Q: compare EBL, Prime and BRAC on home loans
+{{"tool":"market_rates","banks":["EBL","Prime","BRAC"],"products":["home loan"],"title":"Home loan rates"}}
 Q: where is the call money rate?
 {{"tool":"market","codes":["BB_CALL_ON","BB_DOMMR_1M"],"chart":"none","title":"Call money"}}"""

@@ -104,7 +104,7 @@ def page_facts(db: Session, a: "Asker", page: "PageContext | None", resolve) -> 
         return "", []
     from app.ai.copilot import page_facts as pf
     f = pf.build(db, page.page, scope=a.scope, reader=a.reader, label="", resolve=resolve,
-                 scenario=page.scenario)
+                 scenario=page.scenario, market=page.market)
     return "\n".join(f.notes), ([Segment("bank", "\n".join(f.facts))] if f.facts else [])
 
 def _scope_words(db: Session, a: Asker, vault: Vault) -> str:
@@ -328,6 +328,8 @@ class PageContext:
     date_to: date | None = None
     #: The scenario lab's settings on screen.
     scenario: dict | None = None
+    #: The market rate explorer's selection: book, peers, product, bank.
+    market: dict | None = None
 
     @property
     def label(self) -> str:
@@ -360,7 +362,9 @@ def page_context(db: Session, ctx: dict | None) -> PageContext | None:
                               category=None)
     df, dt = _iso(f.get("date_from")), _iso(f.get("date_to"))
     sc = ctx.get("scenario") if page == "scenario" and isinstance(ctx.get("scenario"), dict) else None
-    return PageContext(page, w, df, dt, sc) if (df and dt) else PageContext(page, w, scenario=sc)
+    mk = ctx.get("market") if page == "market" and isinstance(ctx.get("market"), dict) else None
+    return PageContext(page, w, df, dt, sc, mk) if (df and dt) else \
+        PageContext(page, w, scenario=sc, market=mk)
 
 
 def _peer_notes(db: Session, code: str, plan: Plan) -> list[str]:
@@ -613,9 +617,12 @@ def ask(a: Asker, question: str, conversation_id: str | None, lang: str,
         # 3. Narrate.
         yield {"type": "status", "text": "Writing the answer"}
         explain = plan.tool == "explain"
-        segs = [*facts_segs, Segment("user", masked_q)]
+        # The narrator reads the page too: "this bank" is the one open on it.
+        segs = [*facts_segs, *([Segment("instruction", notes)] if notes else []),
+                Segment("user", masked_q)]
         if data_text:
-            kind = "public" if plan.tool == "market" else "bank"
+            kind = "public" if plan.tool in ("market", "market_forecast", "policy_outlook") or \
+                (plan.tool == "market_rates" and not plan.include_ours) else "bank"
             segs.append(Segment(kind, f"RESULT:\n{data_text}"))
         if not explain:
             segs.append(Segment("instruction", "Before you answer, check every claim in the "

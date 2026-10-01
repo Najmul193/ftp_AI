@@ -8,6 +8,8 @@ export interface PageExtra {
   branch?: string; branchLabel?: string;
   /** The scenario lab's settings on screen, and a few words for the context line. */
   scenario?: Record<string, unknown>; scenarioLabel?: string;
+  /** The market rate explorer's selection, and a few words for the context line. */
+  market?: { book: string; peers: string; product?: string; bank?: string }; marketLabel?: string;
 }
 
 let extra: PageExtra = {};
@@ -20,6 +22,6 @@ export function pageExtra(): PageExtra { return extra; }
 export const PAGE_LABELS: Record<string, string> = {
   basic: "Basic overview", daily: "Daily", overview: "Overview", analytics: "Analytics",
   leaders: "Leaders", accounts: "Accounts", consolidated: "Consolidated", intel: "Intelligence",
-  coach: "Branch coach", outlook: "Outlook", scenario: "Scenario lab", pulse: "Bank pulse", alco: "ALCO pack", rates: "Rate configuration", upload: "Upload", admin: "Master data",
+  coach: "Branch coach", outlook: "Outlook", scenario: "Scenario lab", pulse: "Bank pulse", market: "Market rates", alco: "ALCO pack", rates: "Rate configuration", upload: "Upload", admin: "Master data",
   activity: "Activity log", ai: "AI management",
 };

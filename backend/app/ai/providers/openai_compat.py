@@ -32,7 +32,8 @@ MAX_TOKENS_CEILING = 8192
 #: (Gemini especially) answer 503 "high demand" often and briefly.
 RETRY_WAITS = (1.5, 4.0)
 #: A Retry-After longer than this is a quota, not a blip: do not wait for it.
-MAX_RETRY_AFTER = 10.0
+#: Per-minute token limits (Groq's free tier) ask for 10-20 s; waiting beats failing.
+MAX_RETRY_AFTER = 20.0
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 _sleep = time.sleep
 

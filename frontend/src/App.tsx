@@ -23,6 +23,7 @@ import Coach from "./ai/Coach";
 import Outlook from "./ai/Outlook";
 import Pulse from "./ai/Pulse";
 import AlcoPack from "./ai/AlcoPack";
+import MarketRates from "./ai/MarketRates";
 import Scenario from "./ai/Scenario";
 
 //: Basic overview is first and is where a session lands after sign-in.
@@ -56,6 +57,9 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
   { id: "outlook", label: "Outlook", group: "Intelligence", icon: "trend",
     perm: "AI_VIEW", ai: true,
     desc: "Where the book, the market and the policy rate are heading, and how we price against other banks." },
+  { id: "market", label: "Market rates", group: "Intelligence", icon: "percent",
+    perm: "AI_VIEW", ai: true,
+    desc: "Every bank's posted deposit and lending rates, ours beside them; search any bank or rate." },
   { id: "scenario", label: "Scenario lab", group: "Intelligence", icon: "layers",
     perm: "SCENARIO_RUN", ai: true,
     desc: "Move rates, pass-through and balances, and see bank NII, branch profit and treasury respond." },
@@ -153,7 +157,8 @@ function Shell() {
                     outlook: ai?.enabled ? Outlook : Daily,
                     scenario: ai?.enabled ? Scenario : Daily,
                     pulse: ai?.enabled ? Pulse : Daily,
-                    alco: ai?.enabled ? AlcoPack : Daily }[view] ?? Daily;
+                    alco: ai?.enabled ? AlcoPack : Daily,
+                    market: ai?.enabled ? MarketRates : Daily }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 
   const activeFilterCount = (Object.entries(filters) as [string, unknown][]).reduce(

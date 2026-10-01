@@ -653,6 +653,36 @@ def policy_outlook(fs: FactSheet) -> list[Finding]:
     ]
 
 
+# --- 12. other banks changing their posted rates (public) ------------------------ #
+
+COMPETITOR_MOVE_BP = 50
+
+
+def competitor_moves(fs: FactSheet) -> list[Finding]:
+    out = []
+    for m in fs.rate_moves[:6]:
+        if abs(m["change_bp"]) < COMPETITOR_MOVE_BP:
+            continue
+        up = m["change_bp"] > 0
+        deposit = m["book"] == "deposit"
+        what = ("pays more on" if up else "pays less on") if deposit else \
+            ("charges more for" if up else "charges less for")
+        out.append(Finding(
+            kind="competitor_move", subject=f"{m['code']}:{m['product']}"[:60],
+            severity="warning" if (deposit and up) or (not deposit and not up) else "info",
+            title=f"{m['name']} now {what} {m['label'].lower()} ({'+' if up else ''}{m['change_bp']} bp)",
+            body=(f"Its posted rate went from {pct(m['from'])} to {pct(m['to'])} "
+                  f"({_month_of(m['month'])}). "
+                  + ("Depositors comparing rates may move." if deposit and up else
+                     "Borrowers comparing prices may move." if not deposit and not up else
+                     "Room for us to hold or adjust our own price.")),
+            audience="PUBLIC",
+            evidence=(_ev("Before", m["from"], "pct"), _ev("Now", m["to"], "pct"),
+                      _ev("Change", m["change_bp"], "bp")),
+            sources=(_PEER,)))
+    return out
+
+
 # --- running them ------------------------------------------------------------ #
 
 def _window_words(fs: FactSheet) -> str:
@@ -679,7 +709,8 @@ def _drivers(fs: FactSheet) -> str:
 
 BOOK_DETECTORS = (data_freshness, margin, deposits, profit, branch_movers, landing)
 HO_DETECTORS = (benchmark_drift, peer_pricing)
-PUBLIC_DETECTORS = (policy_rate, market_moves, policy_news, stale_curve, policy_outlook)
+PUBLIC_DETECTORS = (policy_rate, market_moves, policy_news, stale_curve, policy_outlook,
+                    competitor_moves)
 
 
 def run(fs: FactSheet, *, include_public: bool, head_office: bool) -> list[Finding]:

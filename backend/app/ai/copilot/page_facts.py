@@ -27,7 +27,7 @@ from app.ai.scenario import engine as scenario_engine
 from app.domain.scope import ScopeFilter
 
 #: Pages that have something of their own to say.
-PAGES = ("outlook", "alco", "pulse", "scenario", "intel")
+PAGES = ("outlook", "alco", "pulse", "scenario", "intel", "market")
 
 
 @dataclass
@@ -111,8 +111,44 @@ def _findings(db: Session, reader: engine.Reader, resolve, out: PageFacts) -> No
             f"{blur_amounts(fill(i.title, resolve))} [{i.severity}]" for i in feed) + ".")
 
 
+def _market(db: Session, scope: ScopeFilter, sel: dict, out: PageFacts) -> None:
+    """The market rate explorer: the book, peer set, rate type and bank open."""
+    from app.ai.public import banks as bank_dir
+    from app.ai.public import explorer
+    from app.ai.public import service as public
+    book = "lending" if sel.get("book") == "lending" else "deposit"
+    peers = sel.get("peers") if sel.get("peers") in public.PEER_SETS else "competitors"
+    branch_ids = None if scope.unrestricted else list(scope.branch_ids or [])
+    _, peer_label = public.peer_banks(db, peers)
+    note = f"ON THE PAGE, MARKET RATES: other banks' posted {book} rates, compared with {peer_label}"
+    product = sel.get("product")
+    c: dict = {}
+    if product:
+        c = explorer.category(db, book, str(product), peers, branch_ids)
+        if c.get("available"):
+            st = c["standing"]
+            note += (f"; the rate type open is {c['label']} ({c['month']:%B %Y}): all banks' median "
+                     f"{st['median']}%, {peer_label} median {st['peer_median']}%, our posted rate "
+                     f"{st['self']}%, we rank {st['rank']} of {st['banks']}")
+            if c.get("book_rate") and c["book_rate"].get("rate") is not None:
+                out.facts.append(f"ON THE PAGE, OUR CUSTOMERS GET on {c['label']}: "
+                                 f"{c['book_rate']['rate']}% (balance-weighted).")
+    code = sel.get("bank")
+    hint = ""
+    if code:
+        b = bank_dir.bank_of(str(code), public.directory(db))
+        note += f"; the bank open is {b.name}"
+        hint = (f' A question about "this bank", "they", "their" or "them" is about {b.name}: '
+                f'use market_rates with "banks": ["{b.name}"].')
+    if product:
+        hint += (f' A question about "this rate" or "this product" is about '
+                 f'"{c["label"] if c.get("available") else product}": put it in "products".')
+    out.notes.append(note + "." + hint)
+
+
 def build(db: Session, page: str | None, *, scope: ScopeFilter, reader: engine.Reader,
-          label: str, resolve: Callable[[str, str], str], scenario: dict | None = None) -> PageFacts:
+          label: str, resolve: Callable[[str, str], str], scenario: dict | None = None,
+          market: dict | None = None) -> PageFacts:
     out = PageFacts()
     if page not in PAGES:
         return out
@@ -127,6 +163,8 @@ def build(db: Session, page: str | None, *, scope: ScopeFilter, reader: engine.R
         elif page == "intel":
             _policy(db, out)
             _findings(db, reader, resolve, out)
+        elif page == "market":
+            _market(db, scope, market or {}, out)
     except Exception:  # noqa: BLE001 - context is a help, never a reason to fail a question
         pass
     return out

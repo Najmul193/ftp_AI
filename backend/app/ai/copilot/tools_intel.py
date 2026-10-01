@@ -221,6 +221,109 @@ def peer_tool(db: Session, scope: ScopeFilter, plan: Plan) -> Result:
                   notes=["No products of yours to compare with these yet."])
 
 
+def _resolve_categories(db: Session, words: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Rate types in words -> (book, category), through the explorer's search
+    (which also knows our own product names)."""
+    from app.ai.public import explorer
+    from app.ai.public import parse as pp
+    out: list[tuple[str, str]] = []
+    for w in words:
+        if w in pp.PRODUCT_LABELS:
+            out.append(("deposit" if w in pp.DEPOSIT_PRODUCTS else "lending", w))
+            continue
+        hit = next((h for h in explorer.search(db, w) if h["type"] in ("category", "product")
+                    and h.get("product")), None)
+        if hit is None:
+            raise ToolRefused("unknown_rate", f"No rate type in Bangladesh Bank's tables matches "
+                                              f"{w!r}. Try e.g. '1 year FD', 'savings', 'home loan'.")
+        out.append((hit["book"], hit["product"]))
+    return list(dict.fromkeys(out))
+
+
+def market_rates_tool(db: Session, scope: ScopeFilter, plan: Plan) -> Result:
+    """Other banks' posted rates, by bank and/or rate type, with ours beside."""
+    from app.ai.public import banks as bank_dir
+    from app.ai.public import explorer
+    d = public.directory(db)
+    chosen: list[bank_dir.Bank] = []
+    for w in plan.peer_banks:
+        b = bank_dir.resolve_bank(w, d)
+        if b is None:
+            raise ToolRefused("unknown_bank", f"No bank in Bangladesh Bank's tables matches {w!r}.")
+        chosen.append(b)
+    cats = _resolve_categories(db, plan.categories)
+    book = cats[0][0] if cats else ("lending" if plan.side == "ASSET" else "deposit")
+    cats = [c for c in cats if c[0] == book] or cats
+    order = plan.order if plan.order in ("asc", "desc") else ("desc" if book == "deposit" else "asc")
+    branch_ids = None if scope.unrestricted else list(scope.branch_ids or [])
+    grid = explorer.grid(db, book, plan.peer_set or ("all" if chosen else "competitors"), branch_ids)
+    if not grid["categories"]:
+        raise ToolRefused("no_data", "Bangladesh Bank's bank-wise tables have not been collected yet.")
+    self_bank = grid["self_bank"]
+    by_code = {r["code"]: r for r in grid["banks"]}
+    meta_cat = {c["product"]: c for c in grid["categories"]}
+    month = grid["month"]
+    rows: list[dict] = []
+    if chosen and not cats:
+        # Each named bank's whole card, category by category, against ours.
+        cols = [Column("label", "Rate type", "text")]
+        for b in chosen:
+            cols.append(Column(f"b_{b.code}", bank_dir.bank_of(b.code, d).name, "pct"))
+        cols += [Column("self", "Our posted rate", "pct"), Column("median", "All banks' median", "pct")]
+        if plan.include_ours:
+            cols.append(Column("book", "Our customers get", "pct"))
+        for c in grid["categories"]:
+            r = {"label": c["label"], "ent": None, "self": c["self"], "median": c["median"],
+                 "book": (c["book"] or {}).get("rate") if plan.include_ours else None}
+            for b in chosen:
+                r[f"b_{b.code}"] = (by_code.get(b.code) or {}).get("rates", {}).get(c["product"])
+            rows.append(r)
+        title = plan.title or f"{', '.join(b.name for b in chosen)} against us"
+        desc = f"Posted {book} rates by type, {month:%B %Y}"
+        chart = None
+    else:
+        cats = cats or [(book, grid["categories"][0]["product"])]
+        if chosen:
+            codes = [b.code for b in chosen]
+        else:
+            in_set = [r for r in grid["banks"] if r["in_set"] and not r["self"]]
+            key = cats[0][1]
+            ranked = sorted((r for r in in_set if r["rates"].get(key) is not None),
+                            key=lambda r: r["rates"][key], reverse=order == "desc")
+            codes = [r["code"] for r in ranked[: plan.limit]]
+        if self_bank not in codes:
+            codes.append(self_bank)
+        cols = [Column("label", "Bank", "text")] + [
+            Column(f"c_{p}", meta_cat[p]["label"] if p in meta_cat else p, "pct") for _, p in cats]
+        for code in codes:
+            r = {"label": bank_dir.bank_of(code, d).name + (" (us, posted)" if code == self_bank else ""),
+                 "ent": None}
+            for _, p in cats:
+                r[f"c_{p}"] = (by_code.get(code) or {}).get("rates", {}).get(p)
+            rows.append(r)
+        rows.append({"label": "All banks' median", "ent": None,
+                     **{f"c_{p}": (meta_cat.get(p) or {}).get("median") for _, p in cats}})
+        if plan.include_ours:
+            rows.append({"label": "Our customers actually get", "ent": None,
+                         **{f"c_{p}": ((meta_cat.get(p) or {}).get("book") or {}).get("rate")
+                            for _, p in cats}})
+        title = plan.title or ", ".join(meta_cat[p]["label"] for _, p in cats if p in meta_cat)
+        desc = (f"Posted {book} rates, {month:%B %Y}"
+                + ("" if chosen else f", {grid['peer_label']}, "
+                   f"{'highest' if order == 'desc' else 'lowest'} first"))
+        chart = {"type": "bar", "x": "label", "horizontal": True, "series": [cols[1].__dict__]}
+    ranks = [f"{c['label']}: we rank {c['rank']} of {c['banks']}" for c in grid["categories"]
+             if c["rank"] and (not cats or c["product"] in {p for _, p in cats})][:4]
+    notes = (["Posted rates as Bangladesh Bank publishes them; a range is shown at its middle."]
+             + ([f"Our rank ({'highest-paying' if book == 'deposit' else 'cheapest'} first): "
+                 + "; ".join(ranks) + "."] if ranks else []))
+    return Result(title=title, description=desc, columns=cols, rows=rows, chart=chart, notes=notes,
+                  link={"label": "Open Market rates",
+                        "href": f"#/market?book={book}"
+                                + (f"&product={cats[0][1]}" if cats else "")
+                                + (f"&bank={quote(chosen[0].code)}" if chosen else "")})
+
+
 def execute(db: Session, scope: ScopeFilter, plan: Plan, where: Where, *, head_office: bool,
             can_scenario: bool) -> Result:
     if plan.tool == "forecast":
@@ -236,5 +339,7 @@ def execute(db: Session, scope: ScopeFilter, plan: Plan, where: Where, *, head_o
         return scenario_tool(db, scope, plan, where)
     if plan.tool == "peer_compare":
         return peer_tool(db, scope, plan)
+    if plan.tool == "market_rates":
+        return market_rates_tool(db, scope, plan)
     raise ToolRefused("unknown", f"unknown tool {plan.tool}")
 
