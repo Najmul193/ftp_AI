@@ -256,7 +256,8 @@ def market_rates_tool(db: Session, scope: ScopeFilter, plan: Plan) -> Result:
     cats = [c for c in cats if c[0] == book] or cats
     order = plan.order if plan.order in ("asc", "desc") else ("desc" if book == "deposit" else "asc")
     branch_ids = None if scope.unrestricted else list(scope.branch_ids or [])
-    grid = explorer.grid(db, book, plan.peer_set or ("all" if chosen else "competitors"), branch_ids)
+    grid = explorer.grid(db, book, plan.peer_set or ("all" if chosen else "competitors"), branch_ids,
+                         plan.basis)
     if not grid["categories"]:
         raise ToolRefused("no_data", "Bangladesh Bank's bank-wise tables have not been collected yet.")
     self_bank = grid["self_bank"]
@@ -314,7 +315,10 @@ def market_rates_tool(db: Session, scope: ScopeFilter, plan: Plan) -> Result:
         chart = {"type": "bar", "x": "label", "horizontal": True, "series": [cols[1].__dict__]}
     ranks = [f"{c['label']}: we rank {c['rank']} of {c['banks']}" for c in grid["categories"]
              if c["rank"] and (not cats or c["product"] in {p for _, p in cats})][:4]
-    notes = (["Posted rates as Bangladesh Bank publishes them; a range is shown at its middle."]
+    notes = ([("Each bank's best posted offer (its highest deposit rate, lowest loan rate)"
+               if plan.basis == "best" else "The middle of each bank's posted range")
+              + ", as Bangladesh Bank publishes them. 'Our customers actually get' is our book's "
+                "real average rate."]
              + ([f"Our rank ({'highest-paying' if book == 'deposit' else 'cheapest'} first): "
                  + "; ".join(ranks) + "."] if ranks else []))
     return Result(title=title, description=desc, columns=cols, rows=rows, chart=chart, notes=notes,

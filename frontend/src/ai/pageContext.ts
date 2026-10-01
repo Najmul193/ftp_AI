@@ -9,7 +9,7 @@ export interface PageExtra {
   /** The scenario lab's settings on screen, and a few words for the context line. */
   scenario?: Record<string, unknown>; scenarioLabel?: string;
   /** The market rate explorer's selection, and a few words for the context line. */
-  market?: { book: string; peers: string; product?: string; bank?: string }; marketLabel?: string;
+  market?: { book: string; peers: string; product?: string; bank?: string; basis?: string }; marketLabel?: string;
 }
 
 let extra: PageExtra = {};

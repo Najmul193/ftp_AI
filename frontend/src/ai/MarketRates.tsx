@@ -4,7 +4,7 @@ import { Button, Card, Empty, Grid, MiniButton, Pill } from "../components/ui";
 import { useApp, useAsync } from "../state";
 import { openAsk } from "./Ask";
 import {
-  MarketHit, marketRatesApi, OurProduct, PeerSet, RateBook, taka,
+  MarketHit, marketRatesApi, OurProduct, PeerSet, RateBasis, RateBook, taka,
 } from "./api";
 import { clearPageExtra, setPageExtra } from "./pageContext";
 import { scenarioLink } from "./Scenario";
@@ -42,15 +42,16 @@ export default function MarketRates() {
   const [peers, setPeers] = useState<PeerSet>(init.peers);
   const [product, setProduct] = useState<string | undefined>(init.product);
   const [bank, setBank] = useState<string | undefined>(init.bank);
-  const grid = useAsync(() => marketRatesApi.grid(book, peers), [book, peers]);
+  const [basis, setBasis] = useState<RateBasis>("best");
+  const grid = useAsync(() => marketRatesApi.grid(book, peers, basis), [book, peers, basis]);
 
   // Ask FTP reads what is open here: "this bank", "this rate".
   useEffect(() => {
     const cat = grid.data?.categories.find((c) => c.product === product)?.label;
     const bk = grid.data?.banks.find((b) => b.code === bank)?.name;
-    setPageExtra({ market: { book, peers, product, bank },
+    setPageExtra({ market: { book, peers, product, bank, basis },
                    marketLabel: [book === "deposit" ? "deposits" : "loans", cat, bk].filter(Boolean).join(" · ") });
-  }, [book, peers, product, bank, grid.data]);
+  }, [book, peers, product, bank, basis, grid.data]);
   useEffect(() => () => clearPageExtra(), []);
 
   const pick = (h: MarketHit) => {
@@ -69,15 +70,24 @@ export default function MarketRates() {
         <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }} role="group" aria-label="Compare with">
           {PEERS.map(([k, label]) => <MiniButton key={k} active={peers === k} onClick={() => setPeers(k)}>{label}</MiniButton>)}
         </div>
+        <div style={{ display: "flex", gap: 2, alignItems: "center" }} role="group" aria-label="Compare by">
+          <span style={muted}>Compare by</span>
+          <span title={book === "deposit" ? "Each bank's highest posted deposit rate: what a depositor shopping around sees"
+                                           : "Each bank's lowest posted loan rate: what a borrower shopping around sees"}>
+            <MiniButton active={basis === "best"} onClick={() => setBasis("best")}>Best offered</MiniButton></span>
+          <span title="The middle of each bank's posted range">
+            <MiniButton active={basis === "typical"} onClick={() => setBasis("typical")}>Typical</MiniButton></span>
+        </div>
         {grid.data?.month && <span style={muted}>Bangladesh Bank, posted rates for {new Date(`${grid.data.month}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })} · {grid.data.banks.length} banks</span>}
       </div>
       {grid.error ? <Card><Empty title="Could not load the rates" hint={grid.error} /></Card>
         : !grid.data ? <p style={muted}>Loading…</p>
         : !grid.data.month ? <Card><Empty title="No bank-wise rates yet" hint="Bangladesh Bank's tables are collected with the public data job." /></Card>
         : <>
-            {product && <CategoryCard book={book} product={product} peers={peers} onClose={() => setProduct(undefined)}
-                                      onBank={setBank} />}
-            {bank && <BankCard code={bank} onClose={() => setBank(undefined)} onCategory={(b, p) => { setBook(b); setProduct(p); }} />}
+            {product && <CategoryCard book={book} product={product} peers={peers} basis={basis}
+                                      onClose={() => setProduct(undefined)} onBank={setBank} />}
+            {bank && <BankCard code={bank} basis={basis} onClose={() => setBank(undefined)}
+                               onCategory={(b, p) => { setBook(b); setProduct(p); }} />}
             <GridCard data={grid.data} product={product} onCategory={setProduct} onBank={setBank} />
           </>}
       <OurProducts />
@@ -163,10 +173,10 @@ function GridCard({ data, product, onCategory, onBank }: {
     fontSize: "var(--fs-sm)", borderBottom: "1px solid var(--border)" };
   return (
     <Card title={`Every bank's posted ${deposit ? "deposit" : "lending"} rates`}
-          subtitle={`Darker is a higher rate within each column. Click a column for that rate across all banks, a bank for its full card. ${deposit ? "Depositors look for the highest" : "Borrowers look for the lowest"}.`}
+          subtitle={`${data.basis === "best" ? `Each bank's best posted offer (its ${deposit ? "highest deposit" : "lowest loan"} rate)` : "The middle of each bank's posted range"}. Darker is a higher rate within each column; hover a cell for the full range. Click a column for that rate across all banks, a bank for its full card.`}
           actions={<MiniButton active={onlySet} onClick={() => setOnlySet((v) => !v)}>
             {onlySet ? `Showing ${data.peer_label}` : "Showing all banks"}</MiniButton>}
-          footnote="Source: Bangladesh Bank, bank-wise interest rates of scheduled banks. A range is shown at its middle; hover a cell for the bank.">
+          footnote={`Source: Bangladesh Bank, bank-wise interest rates of scheduled banks. ${data.banks.filter((b) => Object.values(b.ranges ?? {}).some((r) => r && Number(r[0]) !== Number(r[1]))).length} of ${data.banks.length} banks post ranges rather than single rates. "Our customers get" is our book's actual average rate.`}>
       <div style={{ overflow: "auto", maxHeight: 560 }}>
         <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%" }}>
           <thead><tr>
@@ -193,7 +203,9 @@ function GridCard({ data, product, onCategory, onBank }: {
                   {b.name}{b.self && <span style={muted}> · us (posted)</span>}
                   {b.islamic && <span style={muted}> · Islamic</span>}</td>
                 {data.categories.map((c) => (
-                  <td key={c.product} title={`${b.name}: ${c.label} ${pct(b.rates[c.product])}`}
+                  <td key={c.product} title={`${b.name}: ${c.label} — posted ${b.ranges?.[c.product]
+                        ? (Number(b.ranges[c.product]![0]) === Number(b.ranges[c.product]![1]) ? pct(b.ranges[c.product]![0])
+                          : `${pct(b.ranges[c.product]![0])} to ${pct(b.ranges[c.product]![1])}`) : "—"}`}
                       style={{ ...td, background: shade(c.product, b.rates[c.product]), fontWeight: b.self ? 700 : 400 }}>
                     {pct(b.rates[c.product])}</td>))}
               </tr>))}
@@ -212,12 +224,12 @@ function GridCard({ data, product, onCategory, onBank }: {
 // One rate type across every bank
 // --------------------------------------------------------------------------
 
-function CategoryCard({ book, product, peers, onClose, onBank }: {
-  book: RateBook; product: string; peers: PeerSet; onClose: () => void; onBank: (c: string) => void;
+function CategoryCard({ book, product, peers, basis, onClose, onBank }: {
+  book: RateBook; product: string; peers: PeerSet; basis: RateBasis; onClose: () => void; onBank: (c: string) => void;
 }) {
   const t = useTokens();
   const { can } = useApp();
-  const c = useAsync(() => marketRatesApi.category(book, product, peers), [book, product, peers]);
+  const c = useAsync(() => marketRatesApi.category(book, product, peers, basis), [book, product, peers, basis]);
   const d = c.data;
   const option = useMemo(() => {
     if (!d?.available) return null;
@@ -226,7 +238,8 @@ function CategoryCard({ book, product, peers, onClose, onBank }: {
     const pos = ["insideEndTop", "insideStartTop", "end"] as const;
     const marks = [
       { name: "All banks' median", xAxis: Number(d.standing.median) },
-      ...(d.standing.peer_median != null ? [{ name: `${d.peer_label} median`, xAxis: Number(d.standing.peer_median) }] : []),
+      ...(d.standing.peer_median != null && d.peers !== "all"
+        ? [{ name: `${d.peer_label} median`, xAxis: Number(d.standing.peer_median) }] : []),
       ...(d.book_rate?.rate != null ? [{ name: "Our customers get", xAxis: Number(d.book_rate.rate) }] : []),
     ].map((m, i) => ({ ...m, label: { position: pos[i % 3], formatter: "{b}", color: t.textSecondary, fontSize: 10 } }));
     return {
@@ -263,7 +276,8 @@ function CategoryCard({ book, product, peers, onClose, onBank }: {
             <MiniButton onClick={onClose}>Close</MiniButton></div>}>
       <Grid cols="repeat(auto-fit, minmax(150px, 1fr))" gap={10}>
         {[["Our posted rate", pct(s.self)], ["Our customers get", pct(d.book_rate?.rate)],
-          [`Median, ${d.peer_label}`, pct(s.peer_median)], ["All banks' median", pct(s.median)],
+          ...(d.peers !== "all" ? [[`Median, ${d.peer_label}`, pct(s.peer_median)]] : []),
+          ["All banks' median", pct(s.median)],
           ["Market range", `${pct(s.min)} – ${pct(s.max)}`], ["Our posted vs peers", bp(gap)]].map(([k, v]) => (
           <div key={k}><div style={muted}>{k}</div><b className="tnum" style={{ fontSize: 18 }}>{v}</b></div>))}
       </Grid>
@@ -290,8 +304,10 @@ function CategoryCard({ book, product, peers, onClose, onBank }: {
 // One bank's card
 // --------------------------------------------------------------------------
 
-function BankCard({ code, onClose, onCategory }: { code: string; onClose: () => void; onCategory: (b: RateBook, p: string) => void }) {
-  const r = useAsync(() => marketRatesApi.bank(code), [code]);
+function BankCard({ code, basis, onClose, onCategory }: {
+  code: string; basis: RateBasis; onClose: () => void; onCategory: (b: RateBook, p: string) => void;
+}) {
+  const r = useAsync(() => marketRatesApi.bank(code, basis), [code, basis]);
   const d = r.data;
   if (r.error) return <Card title="Bank"><Empty title="Could not load" hint={r.error} /></Card>;
   if (!d) return <Card title="Bank"><p style={muted}>Loading…</p></Card>;
@@ -356,7 +372,7 @@ function OurProducts() {
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr><th style={{ ...th, textAlign: "left" }}>Product</th><th style={{ ...th, textAlign: "left" }}>Compared with</th>
-            <th style={th}>Our customers get</th><th style={th}>Peers' median</th><th style={th}>Market middle half</th>
+            <th style={th}>Our customers get</th><th style={th} title="Median of the middle of each peer bank's posted range: a like-for-like comparison with our book's average rate">Peers' typical rate</th><th style={th}>Market middle half</th>
             <th style={th}>Gap to peers</th><th style={th}>Balance</th></tr></thead>
           <tbody>{rows.map((x) => {
             const um = "unmapped" in x;

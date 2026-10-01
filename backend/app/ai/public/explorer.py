@@ -29,6 +29,18 @@ from app.models import Product
 #: A posted rate that moved this much since the month before is news.
 MOVE_BP = 25
 
+#: How a bank's posted range is read. Most banks post a range ("2.75-10.25%"):
+#: "best" is what a customer shopping around compares -- the highest deposit
+#: rate on offer, the lowest loan rate; "typical" is the middle of the range.
+BASES = ("best", "typical")
+
+
+def value(v: tuple[Decimal, Decimal, Decimal], book: str, basis: str) -> Decimal:
+    """One bank's (low, high, mid) read on a basis."""
+    if basis == "typical":
+        return v[2]
+    return v[1] if book == "deposit" else v[0]
+
 #: Words people use for each category, for search.
 CATEGORY_WORDS: dict[str, tuple[str, ...]] = {
     "savings": ("savings", "sb", "saving account"),
@@ -79,7 +91,8 @@ def _our_book(db: Session, book: str, branch_ids: list[int] | None) -> dict[str,
                 "balance": a["bal"], "products": a["products"]} for k, a in acc.items()}
 
 
-def grid(db: Session, book: str, peers: str, branch_ids: list[int] | None) -> dict:
+def grid(db: Session, book: str, peers: str, branch_ids: list[int] | None,
+         basis: str = "best") -> dict:
     months = _months(db, book)
     if not months:
         return {"book": book, "month": None, "banks": [], "categories": []}
@@ -93,7 +106,7 @@ def grid(db: Session, book: str, peers: str, branch_ids: list[int] | None) -> di
     book_rates = _our_book(db, book, branch_ids)
     cats = []
     for p in order:
-        vals = {b: v[2] for b, v in mids[p].items()}
+        vals = {b: value(v, book, basis) for b, v in mids[p].items()}
         st = match.standing(vals, self_bank, higher_first=book == "deposit")
         in_set = [v for b, v in vals.items() if chosen is None or b in chosen]
         cats.append({"product": p, "label": parse.PRODUCT_LABELS[p], "median": st["median"],
@@ -106,9 +119,13 @@ def grid(db: Session, book: str, peers: str, branch_ids: list[int] | None) -> di
     rows = [{"code": c, "name": bank_of(d, c).name, "group": bank_of(d, c).group,
              "islamic": bank_of(d, c).islamic, "self": c == self_bank,
              "in_set": chosen is None or c in chosen,
-             "rates": {p: (mids[p][c][2] if c in mids.get(p, {}) else None) for p in order}}
+             "rates": {p: (value(mids[p][c], book, basis) if c in mids.get(p, {}) else None)
+                       for p in order},
+             "ranges": {p: ([mids[p][c][0], mids[p][c][1]] if c in mids.get(p, {}) else None)
+                        for p in order}}
             for c in bank_codes]
     return {"book": book, "month": month, "months": months, "peers": peers, "peer_label": label,
+            "basis": basis,
             "self_bank": self_bank, "categories": cats, "banks": rows}
 
 
@@ -116,7 +133,8 @@ def bank_of(d: dict[str, banks.Bank], code: str) -> banks.Bank:
     return banks.bank_of(code, d)
 
 
-def category(db: Session, book: str, product: str, peers: str, branch_ids: list[int] | None) -> dict:
+def category(db: Session, book: str, product: str, peers: str, branch_ids: list[int] | None,
+             basis: str = "best") -> dict:
     months = _months(db, book)
     if not months or product not in parse.PRODUCT_LABELS:
         return {"book": book, "product": product, "available": False}
@@ -124,10 +142,10 @@ def category(db: Session, book: str, product: str, peers: str, branch_ids: list[
     chosen, label = public.peer_banks(db, peers)
     self_bank = public.meta(db)["self_bank"]
     d = public.directory(db)
-    vals = {b: v[2] for b, v in mids.items()}
+    vals = {b: value(v, book, basis) for b, v in mids.items()}
     st = match.standing(vals, self_bank, higher_first=book == "deposit")
     rows = sorted(({"code": b, "name": bank_of(d, b).name, "group": bank_of(d, b).group,
-                    "low": v[0], "high": v[1], "mid": v[2], "self": b == self_bank,
+                    "low": v[0], "high": v[1], "mid": value(v, book, basis), "self": b == self_bank,
                     "in_set": chosen is None or b in chosen} for b, v in mids.items()),
                   key=lambda r: r["mid"], reverse=book == "deposit")
     trend = []
@@ -135,7 +153,7 @@ def category(db: Session, book: str, product: str, peers: str, branch_ids: list[
         mm = _mids(db, book, m).get(product, {})
         if not mm:
             continue
-        v = {b: x[2] for b, x in mm.items()}
+        v = {b: value(x, book, basis) for b, x in mm.items()}
         trend.append({"month": m, "median": match.quantile(list(v.values()), 0.5),
                       "peer_median": match.quantile([x for b, x in v.items()
                                                      if chosen is None or b in chosen], 0.5),
@@ -144,7 +162,7 @@ def category(db: Session, book: str, product: str, peers: str, branch_ids: list[
     pct = None
     if st["rank"] and st["banks"]:
         pct = round(100 * (st["banks"] - st["rank"]) / max(st["banks"] - 1, 1))
-    return {"available": True, "book": book, "product": product,
+    return {"available": True, "book": book, "product": product, "basis": basis,
             "label": parse.PRODUCT_LABELS[product], "month": months[0], "peers": peers,
             "peer_label": label, "standing": {**st, "percentile": pct,
                                               "peer_median": match.quantile(
@@ -153,13 +171,13 @@ def category(db: Session, book: str, product: str, peers: str, branch_ids: list[
             "higher_is_better_for_customer": book == "deposit"}
 
 
-def bank(db: Session, code: str, branch_ids: list[int] | None) -> dict:
+def bank(db: Session, code: str, branch_ids: list[int] | None, basis: str = "best") -> dict:
     d = public.directory(db)
     b = d.get(code)
     if b is None:
         return {"available": False}
     self_bank = public.meta(db)["self_bank"]
-    out = {"available": True, "code": b.code, "name": b.name, "group": b.group,
+    out = {"available": True, "code": b.code, "name": b.name, "group": b.group, "basis": basis,
            "group_label": banks.GROUP_LABELS.get(b.group, b.group), "islamic": b.islamic,
            "self_bank": self_bank, "books": {}}
     for book in ("deposit", "lending"):
@@ -176,13 +194,15 @@ def bank(db: Session, code: str, branch_ids: list[int] | None) -> dict:
                 continue
             us = mids.get(p, {}).get(self_bank)
             before = prev.get(p, {}).get(code)
+            t_v = value(theirs, book, basis)
+            u_v = value(us, book, basis) if us else None
             rows.append({"product": p, "label": parse.PRODUCT_LABELS[p],
-                         "low": theirs[0], "high": theirs[1], "mid": theirs[2],
-                         "change": (theirs[2] - before[2]) if before else None,
-                         "median": match.quantile([v[2] for v in mids[p].values()], 0.5),
-                         "our_posted": us[2] if us else None,
+                         "low": theirs[0], "high": theirs[1], "mid": t_v,
+                         "change": (t_v - value(before, book, basis)) if before else None,
+                         "median": match.quantile([value(v, book, basis) for v in mids[p].values()], 0.5),
+                         "our_posted": u_v,
                          "our_book": (ours.get(p) or {}).get("rate"),
-                         "gap_to_us": (theirs[2] - us[2]) if us else None})
+                         "gap_to_us": (t_v - u_v) if u_v is not None else None})
         out["books"][book] = {"month": months[0], "rows": rows}
     return out
 

@@ -78,3 +78,11 @@ def test_a_competitor_paying_more_for_deposits_is_news():
     [f] = detectors.competitor_moves(fs)
     assert f.audience == "PUBLIC" and f.severity == "warning" and "+75 bp" in f.title
     assert len(f.kind) <= 40 and len(f.subject) <= 60
+
+
+def test_a_posted_range_is_read_the_way_a_customer_shops():
+    from app.ai.public.explorer import value
+    nrb_fd = (D("2.75"), D("10.25"), D("6.50"))            # BB: "2.75-10.25"
+    assert value(nrb_fd, "deposit", "best") == D("10.25")    # a depositor sees the best rate
+    assert value(nrb_fd, "lending", "best") == D("2.75")     # a borrower, the lowest
+    assert value(nrb_fd, "deposit", "typical") == D("6.50")

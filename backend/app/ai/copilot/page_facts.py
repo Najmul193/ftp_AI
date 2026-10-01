@@ -118,13 +118,16 @@ def _market(db: Session, scope: ScopeFilter, sel: dict, out: PageFacts) -> None:
     from app.ai.public import service as public
     book = "lending" if sel.get("book") == "lending" else "deposit"
     peers = sel.get("peers") if sel.get("peers") in public.PEER_SETS else "competitors"
+    basis = "typical" if sel.get("basis") == "typical" else "best"
     branch_ids = None if scope.unrestricted else list(scope.branch_ids or [])
     _, peer_label = public.peer_banks(db, peers)
-    note = f"ON THE PAGE, MARKET RATES: other banks' posted {book} rates, compared with {peer_label}"
+    note = (f"ON THE PAGE, MARKET RATES: other banks' posted {book} rates, compared with {peer_label}, "
+            + ("each bank read at its best posted offer" if basis == "best"
+               else "each bank read at the middle of its posted range"))
     product = sel.get("product")
     c: dict = {}
     if product:
-        c = explorer.category(db, book, str(product), peers, branch_ids)
+        c = explorer.category(db, book, str(product), peers, branch_ids, basis)
         if c.get("available"):
             st = c["standing"]
             note += (f"; the rate type open is {c['label']} ({c['month']:%B %Y}): all banks' median "

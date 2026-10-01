@@ -114,6 +114,8 @@ class Plan:
     categories: tuple[str, ...] = ()
     peer_set: str | None = None
     include_ours: bool = True
+    #: How a bank's posted range is read: "best" (what a shopper compares) or "typical".
+    basis: str = "best"
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()}
@@ -305,7 +307,8 @@ def _intel_plan(tool: str, d: dict) -> Plan:
                     # Unsaid, the order is the customer's: deposits highest
                     # first, loans cheapest first (decided when it runs).
                     order={"asc": "asc", "desc": "desc"}.get(_str(d.get("order"), 5) or "", "auto"),
-                    include_ours=d.get("include_ours") is not False)
+                    include_ours=d.get("include_ours") is not False,
+                    basis="typical" if _str(d.get("basis"), 10) == "typical" else "best")
     return Plan(tool=tool, side=side, title=title, chart="none" if tool == "policy_outlook" else "bar")
 
 
@@ -428,7 +431,7 @@ Reply with a single JSON object, no prose. Fields:
     "policy_outlook"   which way Bangladesh Bank's policy rate leans at the next MPC meeting, and why
     "scenario"   a what-if: put the settings in "scenario": {{"market_bp": move in bp, "deposit_pass": 0..1, "loan_pass": 0..1, "competitor_bp": other banks' deposit rates move, "deposit_growth_pct", "loan_growth_pct", "horizon_months", "product_rate_bp": {{"PRODUCT_CODE": bp}}}}; omit what the question does not set
     "peer_compare"  our product rates against other banks' posted rates (Bangladesh Bank's bank-wise tables); side optional
-    "market_rates"  look up other banks' posted rates (Bangladesh Bank's monthly tables, 61 banks): "banks": names as written ("City Bank", "EBL", "BRAC"), "products": rate types in words ("1 year FD", "savings", "home loan", "SME working capital"), "group": "competitors"|"pcb"|"fb"|"scb"|"islamic"|"all", "order": "desc" (highest first) or "asc", "limit", "include_ours": true to add our own rates
+    "market_rates"  look up other banks' posted rates (Bangladesh Bank's monthly tables, 61 banks): "banks": names as written ("City Bank", "EBL", "BRAC"), "products": rate types in words ("1 year FD", "savings", "home loan", "SME working capital"), "group": "competitors"|"pcb"|"fb"|"scb"|"islamic"|"all", "order": "desc" (highest first) or "asc", "limit", "include_ours": true to add our own rates, "basis": "best" (default: each bank's best posted offer -- highest deposit, lowest loan rate) or "typical" (the middle of its posted range)
     "explain"    a concept question needing no data ("what is FTP?"); put nothing else
     "clarify"    the question is ambiguous or impossible; put your question to the user in "message"
   metrics: list of up to 4 of

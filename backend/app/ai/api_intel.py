@@ -319,6 +319,8 @@ def _branch_ids(scope) -> list[int] | None:
 
 
 PeerSet = Literal["competitors", "pcb", "fb", "scb", "islamic", "all"]
+#: best: the highest deposit / lowest loan rate a bank posts; typical: the middle of its range.
+Basis = Literal["best", "typical"]
 
 
 @router.get("/market/search", dependencies=_view)
@@ -329,25 +331,25 @@ def market_search(db: DbDep, q: str = Query(..., min_length=1, max_length=80)) -
 
 @router.get("/market/grid", dependencies=_view)
 def market_grid(db: DbDep, scope: ScopeDep, book: Literal["deposit", "lending"] = "deposit",
-                peers: PeerSet = "competitors") -> dict:
+                peers: PeerSet = "competitors", basis: Basis = "best") -> dict:
     """Every bank's posted rates by category; our bank's row and our book's
     actual rates (in the asker's scope) pinned."""
     from app.ai.public import explorer
-    return explorer.grid(db, book, peers, _branch_ids(scope))
+    return explorer.grid(db, book, peers, _branch_ids(scope), basis)
 
 
 @router.get("/market/category", dependencies=_view)
 def market_category(db: DbDep, scope: ScopeDep, product: str = Query(..., max_length=20),
                     book: Literal["deposit", "lending"] = "deposit",
-                    peers: PeerSet = "competitors") -> dict:
+                    peers: PeerSet = "competitors", basis: Basis = "best") -> dict:
     from app.ai.public import explorer
-    return explorer.category(db, book, product, peers, _branch_ids(scope))
+    return explorer.category(db, book, product, peers, _branch_ids(scope), basis)
 
 
 @router.get("/market/bank/{code}", dependencies=_view)
-def market_bank(code: str, db: DbDep, scope: ScopeDep) -> dict:
+def market_bank(code: str, db: DbDep, scope: ScopeDep, basis: Basis = "best") -> dict:
     from app.ai.public import explorer
-    out = explorer.bank(db, code, _branch_ids(scope))
+    out = explorer.bank(db, code, _branch_ids(scope), basis)
     if not out.get("available"):
         raise HTTPException(404, f"no bank {code}")
     return out
