@@ -22,7 +22,6 @@ import AskLauncher from "./ai/Ask";
 import Coach from "./ai/Coach";
 import Outlook from "./ai/Outlook";
 import Pulse from "./ai/Pulse";
-import AlcoPack from "./ai/AlcoPack";
 import MarketRates from "./ai/MarketRates";
 import Scenario from "./ai/Scenario";
 
@@ -63,9 +62,6 @@ const NAV: { id: string; label: string; group: string; icon: IconName;
   { id: "scenario", label: "Scenario lab", group: "Intelligence", icon: "layers",
     perm: "SCENARIO_RUN", ai: true,
     desc: "Move rates, pass-through and balances, and see bank NII, branch profit and treasury respond." },
-  { id: "alco", label: "ALCO pack", group: "Intelligence", icon: "download",
-    perm: "SCENARIO_RUN", ai: true,
-    desc: "The month's asset-liability pack: outlook, sensitivity, pricing and decisions, ready to print." },
   { id: "coach", label: "Branch coach", group: "Intelligence", icon: "target",
     perm: "AI_VIEW", ai: true,
     desc: "Where a branch stands among its peers, and the actions worth most this week." },
@@ -157,7 +153,6 @@ function Shell() {
                     outlook: ai?.enabled ? Outlook : Daily,
                     scenario: ai?.enabled ? Scenario : Daily,
                     pulse: ai?.enabled ? Pulse : Daily,
-                    alco: ai?.enabled ? AlcoPack : Daily,
                     market: ai?.enabled ? MarketRates : Daily }[view] ?? Daily;
   const page = NAV.find((n) => n.id === view) ?? NAV.find((n) => n.id === "daily")!;
 

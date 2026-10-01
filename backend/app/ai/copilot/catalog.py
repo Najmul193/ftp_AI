@@ -353,8 +353,6 @@ PAGES: dict[str, tuple[str, str]] = {
                                  "bank NII, branch FTP profit and treasury"),
     "market": ("Market rates", "every bank's posted deposit and lending rates (Bangladesh Bank's "
                                "bank-wise tables), our posted rates and our customers' actual rates"),
-    "alco": ("ALCO pack", "the monthly asset-liability pack: policy outlook, market forecasts, the "
-                          "book's landing, NII sensitivity, pricing and decisions"),
     "rates": ("Rate configuration", "the FTP benchmark, liquidity and other cost rates in force"),
     "upload": ("Upload", "loading bank data files and their checks"),
     "admin": ("Master data", "the branch and product masters"),
@@ -384,9 +382,6 @@ _PAGE_SUGGESTIONS = {
     "market": ["Which banks pay the most on a 1-year FD?",
                "How does City Bank price against us?",
                "Which private banks are cheapest for home loans?"],
-    "alco": ["Summarise this pack for the committee in five lines",
-             "Which decision here is worth most?",
-             "What if rates fall 100 bp instead?"],
     "coach": ["Why is this branch's cost of deposits above its peers?",
               "How has this branch's FTP profit moved over the last 30 days?"],
 }

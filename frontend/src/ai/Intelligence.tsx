@@ -8,6 +8,7 @@ import {
 } from "./api";
 import BriefCard from "./Brief";
 import HomeCard from "./HomeCard";
+import { AlcoDownload } from "./AlcoPack";
 import InsightFeed from "./Insights";
 import PinnedAnswers from "./Pins";
 
@@ -102,6 +103,7 @@ export default function Intelligence() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -4 }}><AlcoDownload /></div>
       <HomeCard />
       <BriefCard />
       <PinnedAnswers />

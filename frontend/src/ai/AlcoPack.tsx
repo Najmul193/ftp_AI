@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Button, Empty, Pill } from "../components/ui";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { Button, Pill } from "../components/ui";
 import { longDate } from "../format";
-import { useApp, useAsync } from "../state";
+import { useApp } from "../state";
 import { Narrative } from "./Brief";
 import { fmtUnit } from "./Cone";
 import { AlcoPack as Pack, alcoApi, taka } from "./api";
@@ -21,35 +22,30 @@ const signed = (v: number | null | undefined) => {
   return `${x > 0 ? "+" : x < 0 ? "-" : ""}${taka(Math.abs(x))}`;
 };
 
-/** Printed, only the pack shows: the shell, the filters and the buttons stay on screen. */
+/** On screen the pack opens as a full-screen preview; printed (Download
+ *  PDF), only the document shows -- the app behind it and the preview's own
+ *  toolbar are taken out of the layout, so no blank pages print. */
 const PRINT = `@media print {
-  body * { visibility: hidden !important; }
-  #alco-pack, #alco-pack * { visibility: visible !important; }
-  #alco-pack { position: absolute; left: 0; top: 0; width: 100%; padding: 0 !important; }
-  #alco-pack .no-print { display: none !important; }
+  @page { size: A4; margin: 14mm; }
+  html, body { background: #fff !important; overflow: visible !important; }
+  body > *:not(#alco-pack-host) { display: none !important; }
+  #alco-pack-host { position: static !important; background: #fff !important; overflow: visible !important;
+                    padding: 0 !important; }
+  #alco-pack-host .no-print { display: none !important; }
+  #alco-pack-host .alco-sheet { box-shadow: none !important; }
+  #alco-pack-host > div { padding: 0 !important; }
+  #alco-pack { width: auto !important; padding: 0 !important; box-shadow: none !important; margin: 0 !important; }
   #alco-pack section { break-inside: avoid; }
 }`;
 
-export default function AlcoPack() {
-  const p = useAsync(() => alcoApi.get(), []);
-  const { ai } = useApp();
-  const [note, setNote] = useState<Awaited<ReturnType<typeof alcoApi.commentary>> | null>(null);
-  const [writing, setWriting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  if (p.error) return <Empty title="Could not assemble the pack" hint={p.error} />;
-  const d: Pack | null = p.data;
-  if (!d) return <p style={muted}>Assembling the pack…</p>;
+type Note = Awaited<ReturnType<typeof alcoApi.commentary>>;
 
-  const write = async () => {
-    setWriting(true); setErr(null);
-    try { setNote(await alcoApi.commentary()); } catch (e) { setErr((e as Error).message); }
-    finally { setWriting(false); }
-  };
+/** The pack as a document: figures from code, an optional AI commentary. */
+export function AlcoDocument({ d, note, noteError }: { d: Pack; note: Note | null; noteError: string | null }) {
   const month = new Date(`${d.prepared}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const pol = d.policy;
   return (
-    <div id="alco-pack" style={{ background: "var(--surface-1)", border: "1px solid var(--border)",
-                                 borderRadius: "var(--radius)", padding: "28px 34px", maxWidth: 1000 }}>
+    <div id="alco-pack" style={{ background: "#fff", color: "#111", padding: "28px 34px", width: 1000 }}>
       <style>{PRINT}</style>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
         <div>
@@ -58,17 +54,12 @@ export default function AlcoPack() {
           <div style={muted}>{d.label} · prepared {longDate(d.prepared)} · figures from the FTP platform
             {d.book ? `, book data to ${longDate(d.book.latest)}` : ""}</div>
         </div>
-        <div className="no-print" style={{ display: "flex", gap: 8 }}>
-          {ai?.can_chat && <Button onClick={write} disabled={writing}>
-            {writing ? "Writing…" : note ? "Rewrite commentary" : "Write commentary"}</Button>}
-          <Button variant="primary" onClick={() => window.print()}>Print / save PDF</Button>
-        </div>
       </div>
 
-      {(note || err) && (
+      {(note || noteError) && (
         <section>
           <h2 style={h2}>Commentary</h2>
-          {err && <Pill tone="critical">{err}</Pill>}
+          {noteError && <Pill tone="critical">The commentary could not be written: {noteError}</Pill>}
           {note && <>
             <Narrative text={note.text} />
             <div style={{ ...muted, marginTop: 6 }}>
@@ -204,5 +195,80 @@ export default function AlcoPack() {
         <div style={{ ...muted, marginTop: 4 }}>Sources: World Bank; IMF World Economic Outlook.</div>
       </section>
     </div>
+  );
+}
+
+
+/**
+ * "ALCO pack" on the Intelligence page: assembles the month's pack and opens
+ * it as a full-screen preview, where the AI commentary can be added (every
+ * number checked against the pack) and the PDF downloaded. No page of its own.
+ */
+export function AlcoDownload() {
+  const { ai, can } = useApp();
+  const [open, setOpen] = useState(false);
+  const [d, setD] = useState<Pack | null>(null);
+  const [note, setNote] = useState<Note | null>(null);
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [writing, setWriting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const show = async () => {
+    setOpen(true); setErr(null); setLoading(true);
+    try { setD(await alcoApi.get()); } catch (e) { setErr((e as Error).message); } finally { setLoading(false); }
+  };
+  const close = () => { setOpen(false); setD(null); setNote(null); setNoteError(null); };
+  const write = async () => {
+    setWriting(true); setNoteError(null);
+    try { setNote(await alcoApi.commentary()); } catch (e) { setNoteError((e as Error).message); }
+    finally { setWriting(false); }
+  };
+  const download = () => {
+    if (!d) return;
+    const month = new Date(`${d.prepared}T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    const title = document.title;
+    // The saved file takes the page title as its name.
+    document.title = `ALCO pack - ${month}`;
+    window.addEventListener("afterprint", () => { document.title = title; }, { once: true });
+    window.print();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+  }, [open]);
+
+  if (!can("SCENARIO_RUN")) return null;
+  return (
+    <>
+      <Button variant="primary" icon="download" onClick={show}>ALCO pack</Button>
+      {open && createPortal(
+        <div id="alco-pack-host" role="dialog" aria-modal="true" aria-label="ALCO pack preview"
+             style={{ position: "fixed", inset: 0, zIndex: 200, overflow: "auto",
+                      background: "color-mix(in srgb, var(--scrim, #0b1220) 70%, transparent)" }}>
+          <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 1, display: "flex", gap: 8,
+                                             alignItems: "center", padding: "10px 18px",
+                                             background: "var(--surface-1)", borderBottom: "1px solid var(--border)" }}>
+            <b style={{ flex: 1 }}>ALCO pack · preview</b>
+            {ai?.can_chat && d && (
+              <Button onClick={write} disabled={writing}>
+                {writing ? "Writing the commentary…" : note ? "Rewrite AI commentary" : "Add AI commentary"}</Button>)}
+            <Button variant="primary" icon="download" onClick={download} disabled={!d || writing}>Download PDF</Button>
+            <Button onClick={close}>Close</Button>
+          </div>
+          <div style={{ padding: "24px 0 48px", display: "flex", justifyContent: "center" }}>
+            {loading && <p className="no-print" style={{ color: "#fff" }}>Preparing the pack…</p>}
+            {err && <Pill tone="critical">{err}</Pill>}
+            {d && <div className="alco-sheet" style={{ boxShadow: "0 12px 40px rgba(0,0,0,.35)" }}>
+              <AlcoDocument d={d} note={note} noteError={noteError} /></div>}
+          </div>
+        </div>,
+        document.body)}
+    </>
   );
 }
