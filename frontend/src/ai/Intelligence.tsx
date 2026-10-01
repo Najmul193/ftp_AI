@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Chart, { axisCommon, baseOption, useTokens } from "../components/Chart";
 import { Button, Card, Empty, Grid, MiniButton, Pill, Stat, Table } from "../components/ui";
 import { compact, shortDate } from "../format";
@@ -354,7 +354,8 @@ function BbRatesPanel({ d, editor, onChanged }: {
             </p>
           </div>)}
         {editor && (failed || manual
-          ? <EnterRates onSaved={() => { setOutcome(null); onChanged(); }} />
+          ? <EnterRates onSaved={() => { setOutcome(null); onChanged(); }}
+                        onCancel={failed ? undefined : () => setManual(false)} />
           : <button type="button" onClick={() => setManual(true)} style={{
               all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: "var(--fs-sm)" }}>
               Enter or correct rates by hand, or set the policy rate →</button>)}
@@ -373,8 +374,14 @@ const BB_PAGES: [string, string][] = [
   ["Treasury bill & bond auctions", "https://www.bb.org.bd/en/index.php/monetaryactivity/treasury"],
 ];
 
-function EnterRates({ onSaved }: { onSaved: () => void }) {
+function EnterRates({ onSaved, onCancel }: {
+  onSaved: () => void;
+  /** Close the panel too (it was opened by hand, not because reading failed). */
+  onCancel?: () => void;
+}) {
   const [text, setText] = useState("");
+  // A read still in flight when Cancel is pressed must not land afterwards.
+  const run = useRef(0);
   const [parsed, setParsed] = useState<ParseResult | null>(null);
   const [keep, setKeep] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -383,13 +390,22 @@ function EnterRates({ onSaved }: { onSaved: () => void }) {
                                           date: new Date().toISOString().slice(0, 10) });
 
   const read = async () => {
+    const mine = ++run.current;
     setBusy(true); setMsg(null); setParsed(null);
     try {
       const r = await marketApi.parse(text);
+      if (mine !== run.current) return;
       setParsed(r);
       setKeep(Object.fromEntries(r.items.map((i) => [i.code, true])));
-    } catch (e) { setMsg({ tone: "critical", text: (e as Error).message }); }
-    finally { setBusy(false); }
+    } catch (e) {
+      if (mine === run.current) setMsg({ tone: "critical", text: (e as Error).message });
+    } finally { if (mine === run.current) setBusy(false); }
+  };
+
+  const cancel = () => {
+    run.current++;
+    setText(""); setParsed(null); setMsg(null); setBusy(false); setKeep({});
+    onCancel?.();
   };
 
   const save = async () => {
@@ -439,6 +455,8 @@ function EnterRates({ onSaved }: { onSaved: () => void }) {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Button variant="primary" disabled={busy || text.trim().length < 10} onClick={read}>
             {busy && !parsed ? "Reading…" : "Read rates"}</Button>
+          {(onCancel || text || parsed || busy) && (
+            <Button onClick={cancel}>Cancel</Button>)}
           {msg && <span style={para}><Pill tone={msg.tone}>{msg.tone === "good" ? "Done" : "Refused"}</Pill> {msg.text}</span>}
         </div>
 

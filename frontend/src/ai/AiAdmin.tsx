@@ -302,6 +302,14 @@ function Connect({ presets, editable, onDone, onFail }: {
   const [ack, setAck] = useState(false);
   const [budget, setBudget] = useState("0");
   const [busy, setBusy] = useState<"probe" | "save" | null>(null);
+  // A connect or save still in flight when Cancel is pressed is ignored.
+  const run = useRef(0);
+
+  const cancel = () => {
+    run.current++;
+    setBrand(null); setBaseUrl(""); setKey(""); setProbe(null); setModel(""); setLbl("");
+    setTier("PUBLIC"); setFree(false); setAck(false); setBudget("0"); setBusy(null);
+  };
 
   const pick = (p: Preset) => {
     setBrand(p.brand); setBaseUrl(p.base_url); setKey(""); setProbe(null);
@@ -318,10 +326,12 @@ function Connect({ presets, editable, onDone, onFail }: {
 
   const connect = async () => {
     if (!preset) return;
+    const mine = ++run.current;
     setBusy("probe"); setProbe(null);
     try {
       const r = await aiApi.probe({ brand: preset.brand, base_url: baseUrl || undefined,
                                     api_key: key || undefined, model: model || undefined });
+      if (mine !== run.current) return;
       setProbe(r);
       if (r.ok && r.model) {
         setModel(r.model);
@@ -329,7 +339,8 @@ function Connect({ presets, editable, onDone, onFail }: {
         // Prefer a suggested model the provider actually offers.
         setModel(preset.suggested_models.find((m) => r.models.includes(m)) ?? r.models[0]);
       }
-    } catch (e) { onFail(e); } finally { setBusy(null); }
+    } catch (e) { if (mine === run.current) onFail(e); }
+    finally { if (mine === run.current) setBusy(null); }
   };
 
   const needsAck = free && tier !== "PUBLIC" && !preset?.local;
@@ -396,6 +407,7 @@ function Connect({ presets, editable, onDone, onFail }: {
             <Button variant="primary" icon="shield"
                     disabled={busy !== null || (preset.needs_key && !key) || !baseUrl}
                     onClick={connect}>{busy === "probe" ? "Connecting…" : "Connect"}</Button>
+            <Button onClick={cancel} disabled={busy === "save"}>Cancel</Button>
             {probe && (probe.ok
               ? <span style={para}><Pill tone="good">Connected</Pill>{" "}
                   {probe.models.length} model{probe.models.length === 1 ? "" : "s"} available
@@ -427,6 +439,8 @@ function Connect({ presets, editable, onDone, onFail }: {
               <div>
                 <Button variant="primary" disabled={busy !== null || !model || (needsAck && !ack)}
                         onClick={save}>{busy === "save" ? "Saving…" : "Save and test"}</Button>
+                {/* Not while saving: the key may already be stored by then. */}
+                <Button onClick={cancel} disabled={busy === "save"} style={{ marginLeft: 8 }}>Cancel</Button>
               </div>
             </>
           )}
